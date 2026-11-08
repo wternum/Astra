@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { ArrowRight, ArrowUpRight, Check, Cpu, Gift, KeyRound, Loader2, LockKeyhole, PlugZap, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Sparkles, X } from "lucide-react";
+import { ArrowRight, ArrowUpRight, Check, Cpu, Gift, KeyRound, Loader2, LockKeyhole, PlugZap, RefreshCw, Search, ShieldCheck, SlidersHorizontal, X } from "lucide-react";
 import type { ModelConfig, ProviderId } from "@/lib/optimizer";
 import SmartSelect from "@/components/SmartSelect";
 
@@ -10,10 +10,10 @@ export interface ProviderStatus {
   access: "public" | "free-tier" | "byok"; requiresKey: boolean; limits: string; privacy: string; docsUrl: string; keyUrl?: string;
 }
 type ListedModel = { id: string; name: string; context?: number };
+// 只保留两种通道：免费 AI（Pollinations）与自定义 OpenAI 兼容接口。
 const ACCESS_TABS = [
-  { id: "public", label: "公共体验", icon: Gift },
-  { id: "free-tier", label: "免费额度", icon: Sparkles },
-  { id: "byok", label: "自定义接入", icon: SlidersHorizontal },
+  { id: "public", label: "免费 AI", icon: Gift },
+  { id: "byok", label: "自定义接口", icon: SlidersHorizontal },
 ] as const;
 
 export default function ModelDialog({ open, onClose, onConnect, onDisconnect, current, providers }: {
@@ -25,9 +25,7 @@ export default function ModelDialog({ open, onClose, onConnect, onDisconnect, cu
   const [model, setModel] = useState("openai-fast");
   const [key, setKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
-  const [catalog, setCatalog] = useState<ListedModel[]>([{ id: "openrouter/free", name: "自动路由 · 仅免费模型" }]);
   const [discovered, setDiscovered] = useState<ListedModel[]>([]);
-  const [catalogLoading, setCatalogLoading] = useState(false);
   const [detecting, setDetecting] = useState(false);
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState("");
@@ -43,18 +41,6 @@ export default function ModelDialog({ open, onClose, onConnect, onDisconnect, cu
     if (preferred) { setProvider(preferred.id); setAccess(preferred.access); setModel(current?.provider === preferred.id ? current.model : preferred.defaultModel); }
     setKey(current?.apiKey || ""); setBaseUrl(current?.baseUrl || ""); setError(""); setStatus("");
   }, [open, current, providers]);
-
-  useEffect(() => {
-    if (!open || access !== "free-tier") return;
-    let active = true;
-    setCatalogLoading(true);
-    fetch("/api/model?catalog=openrouter").then(r => r.json()).then(data => {
-      if (!active) return;
-      if (Array.isArray(data.models) && data.models.length) setCatalog(data.models);
-      if (data.warning) setStatus(data.warning);
-    }).catch(() => { if (active) setStatus("免费模型目录暂时不可用，仍可选择自动免费路由。"); }).finally(() => { if (active) setCatalogLoading(false); });
-    return () => { active = false; };
-  }, [open, access]);
 
   useEffect(() => {
     if (!open) return;
@@ -100,7 +86,8 @@ export default function ModelDialog({ open, onClose, onConnect, onDisconnect, cu
       const response = await fetch("/api/model", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "discover", modelConfig: config() }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "探测失败");
-      const items = data.models as ListedModel[];
+      const items = (Array.isArray(data.models) ? data.models : []) as ListedModel[];
+      if (!items.length) throw new Error("接口没有返回可用模型，可手动填写模型 ID。");
       setDiscovered(items); setModel(items.find(m => m.id === model)?.id || items[0].id);
       setStatus(`已发现 ${items.length} 个模型。`);
     } catch (e) { setError(e instanceof Error ? e.message : "探测失败；也可手动输入模型 ID"); }
@@ -127,16 +114,16 @@ export default function ModelDialog({ open, onClose, onConnect, onDisconnect, cu
       <h2 id="model-title" className="dialog-title">连接模型</h2>
       <div className="model-access-tabs">{ACCESS_TABS.map(tab => { const Icon = tab.icon; return <button key={tab.id} className={access === tab.id ? "active" : ""} onClick={() => switchTab(tab.id)}><Icon size={16} />{tab.label}</button>; })}</div>
       <form onSubmit={connect}>
-        {access === "public" ? <div className="public-provider-card"><div className="public-provider-top"><span className="public-gift"><Gift size={24} /></span><span className="no-key-sticker">无需密钥</span></div><h3>Pollinations · GPT-OSS 20B</h3><p>免费，请求间隔至少 30 秒。</p></div> : <>
+        {access === "public" ? <div className="public-provider-card"><div className="public-provider-top"><span className="public-gift"><Gift size={24} /></span><span className="no-key-sticker">无需密钥</span></div><h3>Pollinations · GPT-OSS 20B</h3><p>完全免费，无需注册。每 45 秒可获得 1 次回复，ASTRA 会自动排队并在一次请求里完成「需求判定 + 提示词构建」。</p></div> : <>
           {access === "byok" && <div className="provider-choice"><button type="button" className={`provider-choice-item ${isCustom ? "chosen" : ""}`} onClick={() => { const p = providers.find(item => item.id === "custom"); if (p) chooseProvider(p); }}><SlidersHorizontal size={17} /><strong>自定义 URL</strong><span>任意公网兼容接口</span></button>{visibleProviders.filter(p => p.id !== "custom").map(p => <button type="button" key={p.id} className={`provider-choice-item ${provider === p.id ? "chosen" : ""}`} onClick={() => chooseProvider(p)}><Cpu size={17} /><strong>{p.name}</strong><span>官方预设</span></button>)}</div>}
-          {access === "free-tier" && <div className="provider-compact">OpenRouter 免费额度 · 仅提供 :free 模型，不会自动切换收费模型。</div>}
+          {access === "byok" && <div className="provider-compact">填写任意 OpenAI 兼容地址（如 https://api.deepseek.com/v1、https://api.openai.com/v1 或自建服务），ASTRA 会先实时判定需求，再基于判定构建提示词。</div>}
           {isCustom && <><label className="field-label mt-6" htmlFor="custom-url">API 地址</label><div className="input-with-icon"><PlugZap size={17} /><input id="custom-url" className="form-input" type="url" value={baseUrl} onChange={e => { setBaseUrl(e.target.value); setDiscovered([]); setStatus(""); }} placeholder="https://your-provider.com/v1" maxLength={500} autoComplete="url" /></div></>}
-          <label className="field-label mt-6" htmlFor="model-key">API Key <span>{isCustom ? "可留空（公开接口）" : selected?.serverConfigured ? "服务端已配置，可留空" : "仅在当前页面内存中"}</span></label><div className="input-with-icon"><KeyRound size={17} /><input id="model-key" className="form-input" type="password" autoComplete="off" value={key} onChange={e => setKey(e.target.value)} placeholder={selected?.serverConfigured && !isCustom ? "服务端已配置，可留空" : "粘贴 API Key（如服务商要求）"} /></div>
+          <label className="field-label mt-6" htmlFor="model-key">API Key <span>{isCustom ? "仅保存在本标签页会话中" : "仅在当前页面内存中"}</span></label><div className="input-with-icon"><KeyRound size={17} /><input id="model-key" className="form-input" type="password" autoComplete="off" value={key} onChange={e => setKey(e.target.value)} placeholder={selected?.serverConfigured && !isCustom ? "服务端已配置，可留空" : "粘贴 API Key（如服务商要求）"} /></div>
           {isCustom && <button type="button" className="detect-button" onClick={discover} disabled={detecting || !baseUrl.trim()}>{detecting ? <Loader2 size={16} className="spin" /> : <Search size={16} />}{detecting ? "正在探测模型..." : "探测可用模型"}<ArrowRight size={14} /></button>}
           {selected?.keyUrl && <a className="provider-key-link" href={selected.keyUrl} target="_blank" rel="noreferrer">前往 {selected.name} 获取 Key <ArrowUpRight size={14} /></a>}
           <div className="field-label mt-6">模型</div>
           {isCustom && discovered.length > 0 && <SmartSelect value={discovered.some(item => item.id === model) ? model : ""} options={discovered.map(item => ({ value: item.id, label: item.name, detail: item.id !== item.name ? item.id : undefined }))} onChange={setModel} placeholder="选择模型" searchable />}
-          {access === "free-tier" ? <SmartSelect value={model} options={catalog.map(item => ({ value: item.id, label: item.name, detail: item.context ? `${Math.round(item.context / 1000)}K 上下文 · ${item.id}` : item.id }))} onChange={setModel} placeholder="选择免费模型" searchable /> : <div className={`input-with-icon ${isCustom && discovered.length ? "mt-3" : ""}`}><Cpu size={17} /><input className="form-input" value={model} onChange={e => setModel(e.target.value)} maxLength={140} placeholder="模型 ID" /></div>}
+          {<div className={`input-with-icon ${isCustom && discovered.length ? "mt-3" : ""}`}><Cpu size={17} /><input className="form-input" value={model} onChange={e => setModel(e.target.value)} maxLength={140} placeholder="模型 ID，例如 deepseek-chat / gpt-4o-mini" /></div>}
         </>}
         {selected && <div className="model-terms"><div><ShieldCheck size={15} /><p>{selected.privacy}</p></div><div><RefreshCw size={15} /><p>{selected.limits}</p></div>{!isCustom && <a href={selected.docsUrl} target="_blank" rel="noreferrer">查看官方文档 <ArrowUpRight size={13} /></a>}</div>}
         {status && <div className="model-status" role="status"><Check size={15} />{status}</div>}

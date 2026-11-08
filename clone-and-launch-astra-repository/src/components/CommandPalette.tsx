@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowRight, BookOpen, Command, CornerDownLeft, History, LayoutTemplate, Moon, PlugZap, Search, Sparkles, Sun, Wand2, X } from "lucide-react";
+import { ArrowRight, BookOpen, Command, CornerDownLeft, History, Moon, PlugZap, Search, Sparkles, Sun, Wand2, X } from "lucide-react";
 
 export const THEMES = [
   { id: "light", name: "白色", description: "纯白界面 · 清晰专注", color: "#ffffff" },
@@ -22,7 +22,7 @@ export default function CommandPalette({ open, onClose, onNavigate, onUsePrompt,
   const searchRef = useRef<HTMLInputElement>(null);
   const actions = useMemo<Action[]>(() => [
     { id: "studio", label: "打开创作工作台", hint: "STUDIO", keywords: "workspace gongzuotai 工作台", icon: <Wand2 size={18} />, run: () => onNavigate("studio") },
-    { id: "templates", label: "浏览灵感模板库", hint: "LIBRARY", keywords: "template moban 模板", icon: <LayoutTemplate size={18} />, run: () => onNavigate("templates") },
+    { id: "templates", label: "打开知识库", hint: "KNOWLEDGE", keywords: "knowledge zhishiku 知识 资料 模板", icon: <BookOpen size={18} />, run: () => onNavigate("templates") },
     { id: "history", label: "查看历史与收藏", hint: "ARCHIVE", keywords: "history favorite 历史 收藏", icon: <History size={18} />, run: () => onNavigate("history") },
     { id: "guide", label: "打开提示词手册", hint: "GUIDE", keywords: "guide help 帮助 手册", icon: <BookOpen size={18} />, run: () => onNavigate("guide") },
     { id: "model", label: "连接免费 AI 模型", hint: "NO KEY", keywords: "model ai free 免费 模型 pollinations openrouter", icon: <PlugZap size={18} />, run: onOpenModel },

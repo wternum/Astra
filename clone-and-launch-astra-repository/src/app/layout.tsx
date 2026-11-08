@@ -4,9 +4,9 @@ import "./globals.css";
 import "./refinement.css";
 
 export const metadata: Metadata = {
-  applicationName: "星引 ASTRA",
-  title: "星引 ASTRA · 提示词优化工作台",
-  description: "星引 ASTRA：把想法打磨成更清晰的提示词。支持实时诊断、AI 优化、模型接入与版本迭代。",
+  applicationName: "ASTRA",
+  title: "ASTRA · Prompt Optimization Studio",
+  description: "ASTRA：把想法打磨成更清晰的提示词。支持实时诊断、AI 优化、模型接入与版本迭代。",
 };
 
 const appearanceScript = `(function(){try{var saved=localStorage.getItem("promptforge:theme");var dark=saved==="dark"||saved==="midnight";document.documentElement.dataset.theme=dark?"dark":"light";document.documentElement.style.colorScheme=dark?"dark":"light";}catch(e){document.documentElement.dataset.theme="light";document.documentElement.style.colorScheme="light";}})();`;
