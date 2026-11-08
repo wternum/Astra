@@ -1,3 +1,5 @@
+import { LIBRARY_IDS } from "./knowledge-library";
+
 /**
  * Knowledge base entries and relevance-based retrieval.
  *
@@ -19,6 +21,10 @@ export interface KnowledgeEntry {
   scenario?: string;
   source?: string;
   createdAt?: string;
+  updatedAt?: string;
+  sourceUrl?: string;
+  relations?: import("./knowledge-graph").KnowledgeRelation[];
+  library?: string;
 }
 
 export interface KnowledgeSnippet {
@@ -53,6 +59,10 @@ export function normalizeKnowledgeEntries(raw: unknown[]): KnowledgeEntry[] {
         scenario: typeof entry.scenario === "string" ? entry.scenario : "general",
         source: typeof entry.source === "string" ? entry.source : "user",
         createdAt: typeof entry.createdAt === "string" ? entry.createdAt : "",
+        updatedAt: typeof entry.updatedAt === "string" ? entry.updatedAt : "",
+        sourceUrl: typeof entry.sourceUrl === "string" && /^https?:\/\//i.test(entry.sourceUrl) ? entry.sourceUrl.slice(0, 2048) : "",
+        relations: Array.isArray(entry.relations) ? entry.relations.filter((relation): relation is { targetId: number; kind: "references" | "depends_on" } => Boolean(relation && typeof relation === "object" && Number.isInteger(relation.targetId) && relation.targetId > 0 && relation.targetId !== Number(entry.id) && (relation.kind === "references" || relation.kind === "depends_on"))).slice(0, 12) : [],
+        library: typeof entry.library === "string" && LIBRARY_IDS.includes(entry.library) ? entry.library : "",
       };
     })
     .filter(entry => entry.id > 0 || entry.name);

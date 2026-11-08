@@ -127,7 +127,7 @@ export default function Home() {
             </>}
             <Optimizer incoming={incoming} modelConfig={modelConfig} onOpenModel={openModel} onOpenKnowledge={openKnowledge} onGenerated={() => setHistoryCount(old => (old ?? 0) + 1)} />
           </div>
-          {view === "templates" && <div className="interior-page"><InteriorHeading title="知识库" icon={<BookOpen size={35} />} /><KnowledgePanel onUseKnowledge={useStarter} /></div>}
+          {view === "templates" && <div className="interior-page kg-interior-page"><KnowledgePanel onUseKnowledge={useStarter} /></div>}
           {view === "history" && <div className="interior-page"><InteriorHeading title="历史" icon={<History size={35} />} /><HistoryPanel onRestore={loadIntoStudio} onCountChange={setHistoryCount} /></div>}
           {view === "guide" && <div className="interior-page"><InteriorHeading title="手册" icon={<BookOpen size={35} />} /><GuidePanel onUsePrompt={useStarter} /></div>}
         </main>

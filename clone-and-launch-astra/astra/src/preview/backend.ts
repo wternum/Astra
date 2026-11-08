@@ -20,6 +20,8 @@ import { analyzeNeed, localAnalysis, optimizeWithAi, runComparison, type NeedAna
 import { isEnglishRequest } from "@/ai/frontend";
 import { formatKnowledgeBlock, normalizeKnowledgeEntries, selectRelevantKnowledge } from "@/lib/knowledge";
 import { SEED_KNOWLEDGE } from "@/lib/knowledge-seed";
+import { validateRelations } from "@/lib/knowledge-graph";
+import { normalizeLibrary } from "@/lib/knowledge-library";
 
 type Json = Record<string, unknown>;
 
@@ -123,6 +125,17 @@ function readKnowledge(): Json[] {
   return normalizeKnowledgeEntries(readStore<Json[]>(KNOWLEDGE_KEY, [])) as unknown as Json[];
 }
 
+function persistKnowledge(entries: Json[]) {
+  try { window.localStorage.setItem(KNOWLEDGE_KEY, JSON.stringify(entries)); }
+  catch { throw new Error("浏览器存储不可用或空间不足，未保存。请先导出备份。"); }
+}
+
+function knowledgeSource(body: Json): string {
+  if (typeof body.sourceUrl !== "string" || !body.sourceUrl.trim()) return "";
+  try { const url = new URL(body.sourceUrl.trim()); return ["http:", "https:"].includes(url.protocol) ? url.href.slice(0, 2048) : ""; }
+  catch { return ""; }
+}
+
 function readTags(body: Json): string[] {
   const raw = body.tags;
   const tags = Array.isArray(raw)
@@ -136,27 +149,27 @@ function knowledgeCatalog() {
 }
 
 function createKnowledgeEntry(body: Json) {
-  const name = typeof body.name === "string" ? body.name.trim().slice(0, 60) : "";
+  const name = typeof body.name === "string" ? body.name.trim() : "";
   const content = typeof body.templateText === "string" ? body.templateText.trim()
     : typeof body.content === "string" ? body.content.trim() : "";
-  if (!name || !content || content.length > 10000) return null;
+  if (!name || name.length > 60 || !content || content.length > 10000) return null;
+  if (typeof body.sourceUrl === "string" && body.sourceUrl.trim() && !knowledgeSource(body)) throw new Error("来源链接必须是有效的 http 或 https 地址");
   const custom = readKnowledge();
   const catalog = knowledgeCatalog() as unknown as { id: number }[];
+  const id = nextId(catalog);
   const row = {
-    id: nextId(catalog),
-    name,
+    id, name,
     category: typeof body.category === "string" && body.category.trim() ? body.category.trim().slice(0, 30) : "通用",
     description: typeof body.description === "string" ? body.description.trim().slice(0, 240) : "",
-    templateText: content,
-    tags: readTags(body),
-    scenario: "general",
-    isBuiltin: false,
+    templateText: content, tags: readTags(body), scenario: "general", isBuiltin: false,
     enabled: body.enabled !== false,
     accent: typeof body.accent === "string" && body.accent.trim() ? body.accent.trim().slice(0, 16) : "violet",
-    source: "user",
-    createdAt: new Date().toISOString(),
+    source: "user", createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    sourceUrl: knowledgeSource(body),
+    relations: validateRelations(body.relations, id, normalizeKnowledgeEntries(custom)),
+    library: normalizeLibrary(body.library),
   };
-  writeStore(KNOWLEDGE_KEY, [row, ...custom]);
+  persistKnowledge([row, ...custom]);
   return row;
 }
 
@@ -166,17 +179,21 @@ function updateKnowledgeEntry(body: Json) {
   const custom = readKnowledge();
   const index = custom.findIndex(item => Number(item.id) === id);
   if (index === -1) return null;
-  const current = custom[index] as Record<string, unknown>;
-  const next = { ...current };
+  if (typeof body.sourceUrl === "string" && body.sourceUrl.trim() && !knowledgeSource(body)) throw new Error("来源链接必须是有效的 http 或 https 地址");
+  const next = { ...custom[index] };
   for (const key of ["name", "category", "description", "templateText", "accent"] as const) {
-    if (typeof body[key] === "string") next[key] = (body[key] as string).trim();
+    if (typeof body[key] === "string") next[key] = body[key].trim();
   }
   if (typeof body.content === "string") next.templateText = body.content.trim();
   if (typeof body.enabled === "boolean") next.enabled = body.enabled;
   if (body.tags !== undefined) next.tags = readTags(body);
-  if (!String(next.name || "").trim() || !String(next.templateText || "").trim()) return null;
+  if (body.relations !== undefined) next.relations = validateRelations(body.relations, id, normalizeKnowledgeEntries(custom));
+  if (body.sourceUrl !== undefined) next.sourceUrl = knowledgeSource(body);
+  if (body.library !== undefined) next.library = normalizeLibrary(body.library);
+  if (!String(next.name || "").trim() || String(next.name).length > 60 || !String(next.templateText || "").trim() || String(next.templateText).length > 10000) return null;
+  next.updatedAt = new Date().toISOString();
   custom[index] = next;
-  writeStore(KNOWLEDGE_KEY, custom);
+  persistKnowledge(custom);
   return next;
 }
 
@@ -367,7 +384,8 @@ async function route(pathname: string, method: string, search: URLSearchParams, 
     if (method === "DELETE") {
       const id = Number(search.get("id"));
       if (!Number.isInteger(id) || id < 1) return json({ error: "内置示例不可删除" }, 400);
-      writeStore(KNOWLEDGE_KEY, readKnowledge().filter(item => Number(item.id) !== id));
+      const remaining = readKnowledge().filter(item => Number(item.id) !== id).map(item => ({ ...item, relations: Array.isArray(item.relations) ? item.relations.filter(relation => Number(relation?.targetId) !== id) : [] }));
+      persistKnowledge(remaining);
       return json({ success: true });
     }
   }
@@ -388,7 +406,7 @@ async function route(pathname: string, method: string, search: URLSearchParams, 
     if (method === "DELETE") {
       const id = Number(search.get("id"));
       if (!Number.isInteger(id) || id < 1) return json({ error: "内置示例不可删除" }, 400);
-      writeStore(KNOWLEDGE_KEY, readKnowledge().filter(item => Number(item.id) !== id));
+      persistKnowledge(readKnowledge().filter(item => Number(item.id) !== id).map(item => ({ ...item, relations: Array.isArray(item.relations) ? item.relations.filter(relation => Number(relation?.targetId) !== id) : [] })));
       return json({ success: true });
     }
   }
