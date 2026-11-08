@@ -12,10 +12,12 @@ export interface KnowledgeEntry {
   category: string;
   description: string;
   templateText: string;
+  tags?: string[];
   enabled?: boolean;
   isBuiltin?: boolean;
   accent?: string;
   scenario?: string;
+  source?: string;
   createdAt?: string;
 }
 
@@ -24,6 +26,7 @@ export interface KnowledgeSnippet {
   title: string;
   category: string;
   description: string;
+  tags: string[];
   content: string;
   score: number;
 }
@@ -39,10 +42,16 @@ export function normalizeKnowledgeEntries(raw: unknown[]): KnowledgeEntry[] {
         category: typeof entry.category === "string" ? entry.category.trim() : "通用",
         description: typeof entry.description === "string" ? entry.description.trim() : "",
         templateText: typeof entry.templateText === "string" ? entry.templateText.trim() : "",
+        tags: Array.isArray(entry.tags)
+          ? entry.tags.filter((tag): tag is string => typeof tag === "string").map(tag => tag.trim()).filter(Boolean).slice(0, 6)
+          : typeof entry.tags === "string"
+            ? (entry.tags as string).split(/[,，\s]+/).map(tag => tag.trim()).filter(Boolean).slice(0, 6)
+            : [],
         enabled: entry.enabled !== false,
         isBuiltin: Boolean(entry.isBuiltin),
         accent: typeof entry.accent === "string" ? entry.accent : "violet",
         scenario: typeof entry.scenario === "string" ? entry.scenario : "general",
+        source: typeof entry.source === "string" ? entry.source : "user",
         createdAt: typeof entry.createdAt === "string" ? entry.createdAt : "",
       };
     })
@@ -88,7 +97,8 @@ export function selectRelevantKnowledge(
     let score = scoreField(query, entry.name, 4)
       + scoreField(query, entry.description, 2)
       + scoreField(query, entry.category, 1.5)
-      + scoreField(query, entry.templateText, 0.7);
+      + scoreField(query, entry.templateText, 0.7)
+      + scoreField(query, (entry.tags || []).join(" "), 2.4);
     if (entry.category === "通用") score += 0.8;
     const plainName = entry.name.toLowerCase();
     if (plainName.length >= 2 && lower.includes(plainName)) score += 10;
@@ -108,6 +118,7 @@ export function selectRelevantKnowledge(
       title: entry.name,
       category: entry.category,
       description: entry.description.slice(0, 180),
+      tags: entry.tags || [],
       content,
       score: Math.round(score * 10) / 10,
     });
@@ -122,6 +133,7 @@ export function knowledgeForCompiler(snippets: KnowledgeSnippet[]) {
     title: item.title,
     category: item.category,
     description: item.description,
+    tags: item.tags,
     excerpt: item.content,
     relevance: item.score,
   }));
@@ -138,7 +150,8 @@ export function formatKnowledgeBlock(snippets: KnowledgeSnippet[], english = fal
     const label = english ? `Title: ${item.title}` : `标题：${item.title}`;
     const category = english ? `Category: ${item.category}` : `分类：${item.category}`;
     const description = item.description ? (english ? `Description: ${item.description}` : `说明：${item.description}`) : "";
-    return [label, category, description, item.content].filter(Boolean).join("\n");
+    const tags = item.tags?.length ? (english ? `Tags: ${item.tags.join(", ")}` : `关联：${item.tags.join("、")}`) : "";
+    return [label, category, description, tags, item.content].filter(Boolean).join("\n");
   });
   return `<knowledge_base>\n${heading}\n${note}\n\n${lines.join("\n\n")}\n</knowledge_base>`;
 }

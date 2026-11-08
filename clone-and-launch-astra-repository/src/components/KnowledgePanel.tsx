@@ -17,17 +17,24 @@ import KnowledgeNetwork from "@/components/KnowledgeNetwork";
 import type { KnowledgeEntry } from "@/lib/knowledge";
 import { PALETTES, paletteForEntry, paletteById, swatchHex } from "@/lib/knowledge-palette";
 
-const CATEGORIES = ["通用", "品牌", "写作", "开发", "分析", "营销", "学习", "数据", "效率"];
-const EMPTY_FORM = { name: "", category: "通用", description: "", content: "", enabled: true, palette: "violet" };
+const CATEGORIES = ["通用", "品牌", "写作", "开发", "分析", "营销", "学习", "数据", "效率", "创意"];
+const EMPTY_FORM = { name: "", category: "通用", description: "", content: "", tags: "", enabled: true, palette: "violet" };
 const TOKEN_LABELS: [string, "canvas" | "surface" | "text" | "accent" | "highlight"][] = [
   ["画布", "canvas"], ["表面", "surface"], ["正文", "text"], ["强调", "accent"], ["高光", "highlight"],
 ];
+
+function TagChips({ tags, activeTag, onSelect }: { tags: string[]; activeTag: string; onSelect: (tag: string) => void }) {
+  if (!tags.length) return null;
+  return <div className="kb-card-tags">
+    {tags.map(tag => <button key={tag} className={activeTag === tag ? "active" : ""} onClick={() => onSelect(tag)}>{`#${tag}`}</button>)}
+  </div>;
+}
 
 function entryCode(item: KnowledgeEntry) {
   return `<knowledge_base>
 标题：${item.name}
 分类：${item.category || "通用"}
-${item.description ? `说明：${item.description}\n` : ""}${item.templateText}
+${item.tags?.length ? `关联：${item.tags.join("、")}\n` : ""}${item.description ? `说明：${item.description}\n` : ""}${item.templateText}
 </knowledge_base>`;
 }
 
@@ -35,6 +42,7 @@ export default function KnowledgePanel({ onUseKnowledge }: { onUseKnowledge: (te
   const [entries, setEntries] = useState<KnowledgeEntry[]>([]);
   const [category, setCategory] = useState("全部");
   const [query, setQuery] = useState("");
+  const [activeTag, setActiveTag] = useState("全部");
   const [scope, setScope] = useState<"mine" | "builtin">("mine");
   const [viewMode, setViewMode] = useState<Record<number, "preview" | "code">>({});
   const [expanded, setExpanded] = useState<number | null>(null);
@@ -61,12 +69,20 @@ export default function KnowledgePanel({ onUseKnowledge }: { onUseKnowledge: (te
   const categoryCount = useMemo(() => new Set(custom.map(item => item.category || "通用")).size, [custom]);
   const sourceEntries = scope === "mine" ? custom : builtin;
   const categories = useMemo(() => ["全部", ...new Set(sourceEntries.map(item => item.category || "通用"))], [sourceEntries]);
+  const allTags = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const item of sourceEntries) for (const tag of item.tags || []) counts.set(tag, (counts.get(tag) || 0) + 1);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12);
+  }, [sourceEntries]);
   const filtered = useMemo(() => sourceEntries.filter(item => {
     const inCategory = category === "全部" || item.category === category;
-    const haystack = `${item.name} ${item.description} ${item.templateText}`.toLowerCase();
-    return inCategory && (!query || haystack.includes(query.toLowerCase()));
-  }), [sourceEntries, category, query]);
+    const inTag = activeTag === "全部" || (item.tags || []).includes(activeTag);
+    const haystack = `${item.name} ${item.description} ${item.templateText} ${(item.tags || []).join(" ")}`.toLowerCase();
+    return inCategory && inTag && (!query || haystack.includes(query.toLowerCase()));
+  }), [sourceEntries, category, activeTag, query]);
   const latest = useMemo(() => custom[0], [custom]);
+  const tagCount = allTags.length;
+  const linkCount = useMemo(() => custom.reduce((sum, item) => sum + 1 + (item.tags || []).length, 0), [custom, allTags]);
 
   const startCreate = () => {
     setEditingId(null);
@@ -79,7 +95,7 @@ export default function KnowledgePanel({ onUseKnowledge }: { onUseKnowledge: (te
     setEditingId(item.id);
     setForm({
       name: item.name, category: item.category || "通用", description: item.description || "",
-      content: item.templateText, enabled: item.enabled !== false,
+      content: item.templateText, tags: (item.tags || []).join("、"), enabled: item.enabled !== false,
       palette: paletteForEntry(item).id,
     });
     setFormOpen(true);
@@ -96,6 +112,7 @@ export default function KnowledgePanel({ onUseKnowledge }: { onUseKnowledge: (te
         ...(editingId ? { id: editingId } : {}),
         name: form.name.trim(), category: form.category, description: form.description.trim(),
         templateText: form.content.trim(), enabled: form.enabled, accent: form.palette,
+        tags: form.tags.split(/[,，、\s]+/).map(tag => tag.trim()).filter(Boolean).slice(0, 6),
       };
       const response = await fetch("/api/knowledge", {
         method: editingId ? "PATCH" : "POST",
@@ -108,6 +125,7 @@ export default function KnowledgePanel({ onUseKnowledge }: { onUseKnowledge: (te
       setEditingId(null);
       setForm(EMPTY_FORM);
       setCategory("全部");
+      setActiveTag("全部");
       setScope("mine");
       setMessage(editingId ? "知识条目已更新" : "知识已保存，构建提示词时会自动匹配相关内容");
       window.dispatchEvent(new CustomEvent("astra:knowledge-updated"));
@@ -155,6 +173,7 @@ export default function KnowledgePanel({ onUseKnowledge }: { onUseKnowledge: (te
   const switchScope = (next: "mine" | "builtin") => {
     setScope(next);
     setCategory("全部");
+    setActiveTag("全部");
     setQuery("");
   };
 
@@ -165,12 +184,17 @@ export default function KnowledgePanel({ onUseKnowledge }: { onUseKnowledge: (te
           <span className="kb-kicker">KNOWLEDGE GRAPH</span>
           <h2>让知识，<br />沿网络生长。</h2>
           <p>保存品牌事实、写作规范、项目约定。输入一句话时，AI 会沿着这张网络自动引用相关知识来构建提示词。</p>
+          {custom.some(item => item.source === "seed") && <span className="kb-seed-note">已预置 {custom.filter(item => item.source === "seed").length} 条示例知识，可自由编辑、停用或删除</span>}
           <div className="kb-hero-stats">
             <span><strong>{String(custom.length).padStart(2, "0")}</strong><small>条知识</small></span>
             <i />
             <span><strong>{String(categoryCount).padStart(2, "0")}</strong><small>个分类</small></span>
             <i />
             <span><strong>{String(enabled).padStart(2, "0")}</strong><small>参与构建</small></span>
+            <i />
+            <span><strong>{String(tagCount).padStart(2, "0")}</strong><small>知识关键词</small></span>
+            <i />
+            <span><strong>{String(linkCount).padStart(2, "0")}</strong><small>条关联</small></span>
           </div>
         </div>
         <div className="kb-hero-side">
@@ -188,20 +212,36 @@ export default function KnowledgePanel({ onUseKnowledge }: { onUseKnowledge: (te
 
       <section className="kb-network-band">
         <div className="kb-network-head">
-          <div><span className="kb-kicker">LIVE GRAPH</span><h3>知识关系网络</h3></div>
-          <p>点击分类节点即可筛选下方知识；点击条目节点可直接打开内容。</p>
+          <div><span className="kb-kicker">LIVE KNOWLEDGE WEB</span><h3>知识关系网络</h3></div>
+          <p>拖拽节点、滚轮缩放、拖动空白处平移；点击分类或关键词可筛选下方卡片。</p>
         </div>
         <div className="kb-network-stage">
-          <KnowledgeNetwork entries={sourceEntries} activeCategory={category} onCategory={value => { setCategory(value); setQuery(""); document.getElementById("kb-grid")?.scrollIntoView({ behavior: "smooth", block: "start" }); }} onEntry={item => { setExpanded(expanded === item.id ? null : item.id); document.getElementById("kb-grid")?.scrollIntoView({ behavior: "smooth", block: "start" }); }} />
+          <div className="kb-network-frame">
+            <KnowledgeNetwork
+              entries={sourceEntries}
+              activeCategory={category}
+              activeTag={activeTag}
+              onCategory={value => { setCategory(value); setQuery(""); }}
+              onTag={value => { setActiveTag(value); setQuery(""); }}
+              onEntry={item => {
+                setExpanded(expanded === item.id ? null : item.id);
+                document.getElementById("kb-grid")?.scrollIntoView({ behavior: "smooth", block: "start" });
+              }}
+            />
+            <span className="kb-network-hint">拖拽 · 缩放 · 双击复位</span>
+          </div>
           <aside className="kb-network-legend">
-            <span className="kb-kicker">如何阅读</span>
+            <span className="kb-kicker">节点类型</span>
             <ul>
-              <li><i className="legend-hub" />核心知识库</li>
+              <li><i className="legend-hub" />知识库核心</li>
               <li><i className="legend-cat" />分类节点</li>
               <li><i className="legend-entry" />知识条目</li>
-              <li><i className="legend-line" />连线上流动的光点代表构建时的引用关系</li>
+              <li><i className="legend-tag" />共享关键词</li>
+              <li><i className="legend-line" />引用关系与流动信号</li>
             </ul>
-            {category !== "全部" && <button className="kb-clear-filter" onClick={() => setCategory("全部")}>清除「{category}」筛选 <X size={13} /></button>}
+            <span className="kb-kicker kb-legend-title">当前聚焦</span>
+            <p className="kb-legend-focus">{category === "全部" ? "全部类别" : category} · {activeTag === "全部" ? "全部关键词" : activeTag}<br />{filtered.length} 条知识 · {linkCount} 条关联</p>
+            {(category !== "全部" || activeTag !== "全部") && <button className="kb-clear-filter" onClick={() => { setCategory("全部"); setActiveTag("全部"); }}>清除筛选 <X size={13} /></button>}
           </aside>
         </div>
       </section>
@@ -211,6 +251,14 @@ export default function KnowledgePanel({ onUseKnowledge }: { onUseKnowledge: (te
         <button className={scope === "builtin" ? "active" : ""} onClick={() => switchScope("builtin")}>内置示例 <span>{builtin.length}</span></button>
         <small>{scope === "mine" ? "只有这里已启用的条目会参与 AI 构建" : "内置提示词仅供取用，不会作为事实注入"}</small>
       </div>
+
+      {allTags.length > 0 && <div className="kb-tag-rail">
+        <span className="kb-kicker">关联关键词</span>
+        <div className="kb-tag-list">
+          <button className={activeTag === "全部" ? "active" : ""} onClick={() => setActiveTag("全部")}>全部</button>
+          {allTags.map(([tag, count]) => <button key={tag} className={activeTag === tag ? "active" : ""} onClick={() => setActiveTag(activeTag === tag ? "全部" : tag)}>{tag} <small>{count}</small></button>)}
+        </div>
+      </div>}
 
       <div className="library-toolbar">
         <div className="category-list">{categories.map(value => <button key={value} className={category === value ? "active" : ""} onClick={() => setCategory(value)}>{value}</button>)}</div>
@@ -232,6 +280,7 @@ export default function KnowledgePanel({ onUseKnowledge }: { onUseKnowledge: (te
             <div><label className="field-label" htmlFor="knowledge-name">标题</label><input id="knowledge-name" className="form-input" value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} placeholder="例如：品牌语气规范" maxLength={60} /></div>
             <div><label className="field-label" htmlFor="knowledge-category">分类</label><SmartSelect id="knowledge-category" value={form.category} options={CATEGORIES.map(value => ({ value, label: value }))} onChange={value => setForm({ ...form, category: value })} placeholder="选择分类" /></div>
             <div className="form-wide"><label className="field-label" htmlFor="knowledge-description">用途说明</label><input id="knowledge-description" className="form-input" value={form.description} onChange={event => setForm({ ...form, description: event.target.value })} placeholder="这条知识适合哪类任务" maxLength={240} /></div>
+            <div className="form-wide"><label className="field-label" htmlFor="knowledge-tags">关联关键词 <small>用顿号或逗号分隔，用于知识网互联与检索</small></label><input id="knowledge-tags" className="form-input" value={form.tags} onChange={event => setForm({ ...form, tags: event.target.value })} placeholder="例如：语气、文案、品牌" maxLength={120} /></div>
             <div className="form-wide"><label className="field-label" htmlFor="knowledge-content">知识内容</label><textarea id="knowledge-content" className="form-textarea" rows={6} value={form.content} onChange={event => setForm({ ...form, content: event.target.value })} placeholder="粘贴事实、术语、风格要求或项目约定" maxLength={10000} /></div>
             <div className="form-wide">
               <span className="field-label">配色</span>
@@ -297,6 +346,10 @@ export default function KnowledgePanel({ onUseKnowledge }: { onUseKnowledge: (te
               <div className="kb-card-icon"><BookOpen size={20} /></div>
               <h3>{item.name}</h3>
               <p className="template-desc">{item.description || (builtin ? "内置示例提示词，仅供工作台取用" : "用户提供的参考知识")}</p>
+              <TagChips tags={item.tags || []} activeTag={activeTag} onSelect={tag => {
+                setActiveTag(activeTag === tag ? "全部" : tag);
+                document.getElementById("kb-grid")?.scrollIntoView({ behavior: "smooth", block: "start" });
+              }} />
 
               <div className="kb-tabs" role="tablist" aria-label={`${item.name} 展示方式`}>
                 <button role="tab" aria-selected={view === "preview"} className={view === "preview" ? "active" : ""} onClick={() => setViewMode(old => ({ ...old, [item.id]: "preview" }))}><Sparkles size={13} />效果预览</button>
@@ -310,6 +363,7 @@ export default function KnowledgePanel({ onUseKnowledge }: { onUseKnowledge: (te
                     <span className="kb-mini-tag">{item.category || "通用"}</span>
                     <h4>{item.name}</h4>
                     <p>{(item.description || item.templateText).slice(0, 84)}{((item.description || item.templateText).length > 84) ? "…" : ""}</p>
+                    {(item.tags || []).length > 0 && <span className="kb-mini-tags">{(item.tags || []).map(tag => `#${tag}`).join("  ")}</span>}
                     <div className="kb-mini-palette">{TOKEN_LABELS.map(([label, key]) => <i key={key} title={`${label} · ${swatchHex(palette.colors[key])}`} style={{ background: palette.colors[key] }} />)}</div>
                     <span className="kb-mini-cta">查看内容 <ArrowUpRight size={11} /></span>
                   </div>

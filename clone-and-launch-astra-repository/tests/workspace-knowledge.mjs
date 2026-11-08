@@ -34,7 +34,7 @@ try {
   page.on("pageerror", error => errors.push(`knowledge: ${error.message}`));
   await page.addInitScript(() => {
     localStorage.setItem("promptforge:model:v3", "local");
-    localStorage.removeItem("astra:preview:templates:v1");
+    localStorage.setItem("astra:preview:templates:v1", "[]");
     localStorage.removeItem("promptforge:draft:v2");
   });
   await page.goto(origin, { waitUntil: "networkidle" });
@@ -76,7 +76,7 @@ try {
   }, null, { timeout: 15000 });
   console.log("knowledge toggle: disabling it removes knowledge from the generated prompt");
 
-  await page.evaluate(() => localStorage.removeItem("astra:preview:templates:v1"));
+  await page.evaluate(() => localStorage.setItem("astra:preview:templates:v1", "[]"));
   assert.deepEqual(errors, []);
   console.log("workspace/knowledge regression test passed");
 } finally {

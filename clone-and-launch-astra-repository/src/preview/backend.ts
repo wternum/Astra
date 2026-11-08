@@ -19,6 +19,7 @@ import { chat, listModels, type AiConfig } from "@/ai/client";
 import { analyzeNeed, localAnalysis, optimizeWithAi, runComparison, type NeedAnalysis } from "@/ai/engine";
 import { isEnglishRequest } from "@/ai/frontend";
 import { formatKnowledgeBlock, normalizeKnowledgeEntries, selectRelevantKnowledge } from "@/lib/knowledge";
+import { SEED_KNOWLEDGE } from "@/lib/knowledge-seed";
 
 type Json = Record<string, unknown>;
 
@@ -106,8 +107,28 @@ function pickLayer(raw: unknown): LayerId | null {
   return typeof raw === "string" && LAYERS.some(l => l.id === raw) ? raw as LayerId : null;
 }
 
+function ensureSeedKnowledge() {
+  // Only populate on the very first visit. An existing (even empty) store means
+  // the user has taken ownership and should not see the samples reappear.
+  try {
+    if (window.localStorage.getItem(KNOWLEDGE_KEY) !== null) return;
+    window.localStorage.setItem(KNOWLEDGE_KEY, JSON.stringify(SEED_KNOWLEDGE));
+  } catch { /* Storage optional; graph still uses a temporary in-memory seed. */ }
+}
+
 function readKnowledge(): Json[] {
+  ensureSeedKnowledge();
+  // An existing empty array means the user intentionally cleared the library;
+  // never resurrect the sample entries in that case.
   return normalizeKnowledgeEntries(readStore<Json[]>(KNOWLEDGE_KEY, [])) as unknown as Json[];
+}
+
+function readTags(body: Json): string[] {
+  const raw = body.tags;
+  const tags = Array.isArray(raw)
+    ? raw.filter((tag): tag is string => typeof tag === "string").map(tag => tag.trim())
+    : typeof raw === "string" ? raw.split(/[,，\s]+/).map(tag => tag.trim()) : [];
+  return tags.filter(Boolean).slice(0, 6);
 }
 
 function knowledgeCatalog() {
@@ -127,6 +148,7 @@ function createKnowledgeEntry(body: Json) {
     category: typeof body.category === "string" && body.category.trim() ? body.category.trim().slice(0, 30) : "通用",
     description: typeof body.description === "string" ? body.description.trim().slice(0, 240) : "",
     templateText: content,
+    tags: readTags(body),
     scenario: "general",
     isBuiltin: false,
     enabled: body.enabled !== false,
@@ -151,6 +173,7 @@ function updateKnowledgeEntry(body: Json) {
   }
   if (typeof body.content === "string") next.templateText = body.content.trim();
   if (typeof body.enabled === "boolean") next.enabled = body.enabled;
+  if (body.tags !== undefined) next.tags = readTags(body);
   if (!String(next.name || "").trim() || !String(next.templateText || "").trim()) return null;
   custom[index] = next;
   writeStore(KNOWLEDGE_KEY, custom);
@@ -184,7 +207,8 @@ async function handleOptimize(body: Json, signal?: AbortSignal) {
   const previous = typeof body.previousPrompt === "string" ? body.previousPrompt : "";
   const forced = pickLayer(body.layerId);
   const config = body.mode === "ai" ? toAiConfig(body.modelConfig) : null;
-  const knowledge = body.useKnowledge === false ? [] : selectRelevantKnowledge(prompt, readStore<Json[]>(KNOWLEDGE_KEY, []));
+  ensureSeedKnowledge();
+  const knowledge = body.useKnowledge === false ? [] : selectRelevantKnowledge(prompt, readKnowledge());
 
   if (body.mode === "ai" && !config) return json({ error: "请先连接免费 AI 或自定义接口" }, 400);
 
@@ -324,6 +348,7 @@ async function route(pathname: string, method: string, search: URLSearchParams, 
   }
 
   if (pathname === "/api/knowledge") {
+    ensureSeedKnowledge();
     const entries = knowledgeCatalog();
     if (method === "GET") {
       const custom = readKnowledge();
@@ -348,6 +373,7 @@ async function route(pathname: string, method: string, search: URLSearchParams, 
   }
 
   if (pathname === "/api/templates") {
+    ensureSeedKnowledge();
     if (method === "GET") return json(knowledgeCatalog());
     if (method === "POST") {
       const row = createKnowledgeEntry(body);

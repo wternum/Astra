@@ -146,7 +146,8 @@ npm run preview -- --host 0.0.0.0 --port 4173
 ## 6. 连接模型与知识库
 - 首次访问不自动连接模型：顶部 Hero 保留「连接模型」入口。用户验证并连接后，Hero 与工作区标题隐藏，输入框直接置顶；刷新页面时会恢复已保存的连接状态，断开后恢复引导卡片。
 - 知识库数据保存在浏览器 `localStorage`（`astra:preview:templates:v1`），通过 `/api/knowledge` 管理；`/api/templates` 保留为兼容入口。
+- 首次访问会写入 `src/lib/knowledge-seed.ts` 中的 12 条示例知识（可编辑/删除），保证知识网与卡片立即有内容。
 - 知识库 UI（`src/components/KnowledgePanel.tsx` + `src/knowledge.css`）包含：分类导航、交互式知识关系网络（`src/components/KnowledgeNetwork.tsx`）、以及每张卡片的「效果预览 / 构建代码」双视图与五色配色卡（`src/lib/knowledge-palette.ts`）。
 - 默认显示「我的知识」；用户可新建、编辑、停用、删除、搜索条目，「内置示例」放在独立标签，不会挤占用户知识。
 - 用户创建且启用的条目会按当前输入自动匹配，最多注入 3 条、约 2400 字；AI 构建器将其作为独立 `<knowledge_base>` 资料块使用，质量检查会确认引用，缺失时由代码确定性补齐。内置示例和停用条目不参与构建。
-- 完整验证：`./node_modules/.bin/tsx --test tests/knowledge.test.ts` 与 `node tests/workspace-knowledge.mjs`。
+- 完整验证：`./node_modules/.bin/tsx --test tests/knowledge.test.ts`、`node tests/workspace-knowledge.mjs` 与 `node tests/knowledge-web.mjs`。

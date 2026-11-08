@@ -128,7 +128,7 @@ try {
   await page.addInitScript(() => {
     localStorage.setItem("promptforge:model:v3", "local");
     localStorage.removeItem("promptforge:custom-endpoint:v1");
-    localStorage.removeItem("astra:preview:templates:v1");
+    localStorage.setItem("astra:preview:templates:v1", "[]");
     sessionStorage.removeItem("astra:custom-key");
   });
   await page.goto(origin, { waitUntil: "networkidle" });
@@ -181,7 +181,7 @@ try {
   assert.equal(optionsRequests, 0, "browser CORS preflight should be bypassed by relay");
   assert.ok(auths.every(value => value === "Bearer sk-synthetic-valid"));
   console.log("custom generation: analysis, knowledge and builder JSON accepted, key forwarded through relay");
-  await page.evaluate(() => localStorage.removeItem("astra:preview:templates:v1"));
+  await page.evaluate(() => localStorage.setItem("astra:preview:templates:v1", "[]"));
 
   // ---- Real endpoint with an intentionally invalid key ----
   const real = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
