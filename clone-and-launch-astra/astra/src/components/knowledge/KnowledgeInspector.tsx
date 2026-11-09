@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { ArrowRight, ArrowUpRight, BookOpen, Check, Copy, ExternalLink, Focus, Link2, Pencil, Trash2, X } from "lucide-react";
+import { ArrowRight, ArrowUpRight, BookOpen, Check, Copy, ExternalLink, Focus, Link2, Pencil, Plus, Trash2, X } from "lucide-react";
 import type { KnowledgeEntry } from "@/lib/knowledge";
 import { RELATION_LABELS, type GraphEdge } from "@/lib/knowledge-graph";
 import { paletteForEntry } from "@/lib/knowledge-palette";
@@ -9,16 +9,16 @@ export function entryCode(item: KnowledgeEntry) {
   return `<knowledge_base>\n标题：${item.name}\n分类：${item.category || "通用"}\n${item.tags?.length ? `关联：${item.tags.join("、")}\n` : ""}${item.sourceUrl ? `来源：${item.sourceUrl}\n` : ""}${item.description ? `说明：${item.description}\n` : ""}${item.templateText}\n</knowledge_base>`;
 }
 
-export default function KnowledgeInspector({ entry, edges, entries, onSelect, onEdit, onUse, onToggle, onCopy, copied, onFocus, focused, onClose, onDelete }: {
+export default function KnowledgeInspector({ entry, edges, entries, onSelect, onEdit, onUse, onToggle, onCopy, copied, onFocus, focused, onClose, onDelete, onCreateRelated }: {
   entry: KnowledgeEntry; edges: GraphEdge[]; entries: KnowledgeEntry[]; onSelect: (id: number) => void;
   onEdit: () => void; onUse: () => void; onToggle: () => void; onCopy: () => void; copied: boolean;
-  onFocus: () => void; focused: boolean; onClose: () => void; onDelete: () => void;
+  onFocus: () => void; focused: boolean; onClose: () => void; onDelete: () => void; onCreateRelated?: () => void;
 }) {
   const [tab, setTab] = useState<"overview" | "content" | "code">("overview");
   const palette = paletteForEntry(entry);
   const related = edges.filter(edge => edge.sourceIds.includes(entry.id) && edge.kind !== "contains");
   return <div className="kg-inspector-content">
-    <div className="kg-inspector-top"><span className="kg-eyebrow">知识详情</span><button className="kg-icon" onClick={onClose} aria-label="关闭知识详情"><X size={16} /></button></div>
+    <div className="kg-inspector-top"><span className="kg-eyebrow">知识详情 · 图谱内操作</span><button className="kg-icon" onClick={onClose} aria-label="关闭知识详情"><X size={16} /></button></div>
     <div className="kg-inspector-title"><span className="kg-entry-icon" style={{ color: palette.colors.accent, background: `${palette.colors.accent}16` }}><BookOpen size={21} /></span><span className="kg-category-label">{entry.category || "通用"}</span>{!entry.isBuiltin && <button className={`kg-status ${entry.enabled !== false ? "on" : ""}`} onClick={onToggle} aria-pressed={entry.enabled !== false}><i />{entry.enabled !== false ? "已启用" : "已停用"}</button>}</div>
     <h3>{entry.name}</h3><p className="kg-inspector-description">{entry.description || "用户提供的参考知识"}</p>
     <div className="kg-detail-tabs" role="tablist" aria-label="知识详情视图">{([['overview', '概览'], ['content', '原文'], ['code', '引用代码']] as const).map(([id, label]) => <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>{label}</button>)}</div>
@@ -31,6 +31,7 @@ export default function KnowledgeInspector({ entry, edges, entries, onSelect, on
       {tab === "content" && <><span className="kg-section-label">完整原文 · {entry.templateText.length} 字</span><p className="kg-full-content">{entry.templateText}</p></>}
       {tab === "code" && <><div className="kg-section-row"><span className="kg-section-label">独立参考资料块</span><button className="kg-text-button" onClick={onCopy}>{copied ? <Check size={13} /> : <Copy size={13} />}{copied ? "已复制" : "复制"}</button></div><pre className="kg-code">{entryCode(entry)}</pre><p className="kg-muted">仅在当前任务相关且条目已启用时注入，最多引用 3 条、约 2,400 字。</p></>}
     </div>
+    {onCreateRelated && <button className="kg-create-related" onClick={onCreateRelated} title="以当前知识为起点，在图谱中创建一条已连线的知识"><Plus size={14} />从此新建关联知识</button>}
     <div className="kg-inspector-actions"><button className="kg-button kg-primary" onClick={onUse}>用于工作台 <ArrowUpRight size={15} /></button>{!entry.isBuiltin && <><button className="kg-icon kg-bordered" onClick={onEdit} aria-label="编辑当前知识"><Pencil size={16} /></button><button className="kg-icon kg-bordered" onClick={onDelete} aria-label="删除当前知识"><Trash2 size={15} /></button></>}<button className={`kg-icon kg-bordered ${focused ? "active" : ""}`} onClick={onFocus} aria-label={focused ? "退出邻域聚焦" : "聚焦关联知识"} aria-pressed={focused}><Focus size={17} /></button></div>
   </div>;
 }

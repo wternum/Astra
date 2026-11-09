@@ -1,6 +1,6 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { Agent, fetch as undiciFetch, type Dispatcher } from "undici";
+import { Agent, fetch as undiciFetch } from "undici";
 
 // Custom endpoints only support HTTPS public DNS hosts. Reject IP literals and
 // private DNS answers, then pin the checked IPv4 address for the actual socket.

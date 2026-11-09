@@ -1,116 +1,191 @@
-import { chromium } from "playwright";
+import { createRequire } from "node:module";
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
-
-const url = process.env.ASTRA_URL || "http://localhost:3000";
+const { chromium } = createRequire(new URL("../astra/package.json", import.meta.url))("playwright");
+const url = process.env.ASTRA_URL || "http://127.0.0.1:3000";
 const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
-const page = await browser.newPage({ viewport: { width: 1440, height: 1050 } });
+const page = await browser.newPage({ viewport: { width: 1512, height: 982 } });
 const errors = [];
 page.on("pageerror", error => errors.push(error.message));
 await mkdir("artifacts", { recursive: true });
-const search = async text => { await page.getByRole("combobox", { name: "搜索知识" }).fill(text); await page.getByRole("option").first().click(); };
-const stored = () => page.evaluate(() => JSON.parse(localStorage.getItem("astra:preview:templates:v1") || "[]"));
-const waitNodes = count => page.waitForFunction(expected => document.querySelectorAll(".react-flow__node").length === expected, count, { timeout: 15000 });
+const pause = (ms = 500) => page.waitForTimeout(ms);
+const viewport = () => page.locator(".react-flow__viewport").evaluate(element => { const m = new DOMMatrix(getComputedStyle(element).transform); return { x: m.e, y: m.f, zoom: m.a }; });
+const position = locator => locator.evaluate(element => { const m = new DOMMatrix(getComputedStyle(element).transform); return { x: m.e, y: m.f }; });
+const openKnowledge = async () => {
+  await page.getByRole("button", { name: "知识库", exact: true }).click();
+  await page.locator(".kn-node-entry").first().waitFor(); await pause(750);
+};
+const assertNoOverlap = async () => {
+  const boxes = await page.locator(".react-flow__node").evaluateAll(nodes => nodes.map(node => { const r = node.getBoundingClientRect(); return { x: r.x, y: r.y, right: r.right, bottom: r.bottom }; }));
+  for (let a = 0; a < boxes.length; a++) for (let b = a + 1; b < boxes.length; b++) {
+    const x = Math.min(boxes[a].right, boxes[b].right) - Math.max(boxes[a].x, boxes[b].x);
+    const y = Math.min(boxes[a].bottom, boxes[b].bottom) - Math.max(boxes[a].y, boxes[b].y);
+    assert.ok(x <= 1 || y <= 1, `nodes ${a} and ${b} overlap`);
+  }
+};
 try {
-  await page.goto(url); await page.getByRole("button", { name: "知识库", exact: true }).click();
-  await page.locator(".kg-flow-library").first().waitFor(); await page.waitForTimeout(700);
+  await page.goto(url, { waitUntil: "networkidle" }); await openKnowledge();
+  assert.equal(await page.locator(".kn-node-entry").count(), 12);
+  assert.equal(await page.locator(".kn-tree-domain").count(), 4);
+  await assertNoOverlap();
+  assert.ok(await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 2), "workspace fits viewport without a page scroll");
+  await page.screenshot({ path: "artifacts/knowledge-ordered-desktop.png" });
+  console.log("PASS: ordered full graph, left hierarchy, viewport-sized workspace");
 
-  // 中心图谱：四个大知识库
-  await waitNodes(4);
-  assert.equal(await page.locator(".kg-flow-library").count(), 4);
-  assert.equal(await page.locator(".kg-hub-list button").count(), 4);
-  await page.screenshot({ path: "artifacts/knowledge-hub.png", fullPage: true });
+  // Ordinary wheel over a node zooms, without modifiers or scrolling the page.
+  const firstNode = page.locator('.react-flow__node[data-id="entry:101"]');
+  const initial = await viewport(); const card = await firstNode.boundingBox();
+  await page.mouse.move(card.x + card.width / 2, card.y + card.height / 2);
+  await page.mouse.wheel(0, -280); await pause(450);
+  const zoomed = await viewport();
+  assert.ok(zoomed.zoom > initial.zoom + .05, "plain wheel over a card zooms in");
+  assert.equal(await page.evaluate(() => window.scrollY), 0);
+  await page.mouse.wheel(0, 280); await pause(450);
+  assert.ok((await viewport()).zoom < zoomed.zoom - .05, "wheel zooms out");
+  await page.getByRole("button", { name: "适应画布", exact: true }).click(); await pause();
+  const area = await page.locator(".kn-viewport").boundingBox();
+  const panBefore = await viewport();
+  await page.mouse.move(area.x + 7, area.y + area.height * .55); await page.mouse.down();
+  await page.mouse.move(area.x + 77, area.y + area.height * .55 + 38, { steps: 12 }); await page.mouse.up(); await pause(150);
+  const panAfter = await viewport();
+  assert.ok(Math.abs(panAfter.x - panBefore.x - 70) < 5 && Math.abs(panAfter.y - panBefore.y - 38) < 5, "dragging blank space pans");
+  await page.getByRole("button", { name: "适应画布", exact: true }).click(); await pause();
+  const nodeBefore = await position(firstNode), vpBefore = await viewport(), rect = await firstNode.boundingBox();
+  await page.mouse.move(rect.x + 50, rect.y + 25); await page.mouse.down();
+  await page.mouse.move(rect.x + 103, rect.y + 62, { steps: 12 }); await page.mouse.up(); await pause(150);
+  const nodeAfter = await position(firstNode);
+  assert.ok(Math.abs(nodeAfter.x - nodeBefore.x) > 25, "cards are draggable");
+  assert.ok(Math.abs((await viewport()).zoom - vpBefore.zoom) < .001, "drag does not reset zoom");
+  await page.reload({ waitUntil: "networkidle" }); await openKnowledge();
+  const restored = await position(page.locator('.react-flow__node[data-id="entry:101"]'));
+  assert.ok(Math.abs(restored.x - nodeAfter.x) < 1, "dragged position survives reload");
+  await page.getByRole("button", { name: "重新整理节点布局", exact: true }).click(); await pause();
+  const arranged = await position(page.locator('.react-flow__node[data-id="entry:101"]'));
+  assert.ok(Math.abs(arranged.x - nodeBefore.x) < 1 && Math.abs(arranged.y - nodeBefore.y) < 1, "one-click arrangement restores grid");
+  await assertNoOverlap();
+  console.log("PASS: ordinary wheel zoom, canvas drag, card drag, persisted positions, auto-arrange");
 
-  // 点击「前端」进入子库：星座轨道 + 星座核
-  await page.locator(".kg-flow-library", { hasText: "前端" }).click();
-  await page.locator(".kg-flow-core").waitFor();
-  assert.equal(await page.locator(".kg-orbit-decor").count(), 1);
-  assert.equal(await page.locator(".react-flow__node").count(), 4); // 星座核 + 开发类目 + 2 条知识
-  assert.ok((await page.locator(".kg-library-current").innerText()).includes("前端"));
-  await page.screenshot({ path: "artifacts/knowledge-sublibrary.png", fullPage: true });
+  // Selecting a domain and category opens an ordered left-to-right branch.
+  await page.getByRole("button", { name: "打开前端知识域", exact: true }).click(); await pause();
+  assert.equal(await page.locator(".kn-node-entry").count(), 2);
+  assert.equal(await page.locator(".kn-node-category").count(), 1);
+  await assertNoOverlap();
+  await page.getByRole("button", { name: "打开前端·开发分类", exact: true }).click(); await pause();
+  assert.ok(await page.getByRole("button", { name: "打开前端·开发·交互子标签", exact: true }).isVisible());
+  await page.screenshot({ path: "artifacts/knowledge-ordered-branch.png" });
+  await page.getByRole("button", { name: "打开前端·开发·交互子标签", exact: true }).click(); await pause();
+  assert.equal(await page.locator(".kn-node-topic").count(), 1);
+  const shownTags = await page.locator(".kn-node-entry").allInnerTexts();
+  assert.ok(shownTags.every(text => text.includes("交互")));
+  await assertNoOverlap();
+  console.log("PASS: left-side domain → category → keyword expansion and aligned child nodes");
 
-  // 点击星座核返回中心图谱
-  await page.locator(".kg-flow-core").click();
-  await waitNodes(4);
-  assert.equal(await page.locator(".kg-flow-library").count(), 4);
+  // Wheel on the tag rail should scroll the rail, not zoom the graph.
+  const beforeRail = await viewport();
+  await page.locator(".kn-tree-scroll").hover(); await page.mouse.wheel(0, 220); await pause(160);
+  assert.ok(Math.abs((await viewport()).zoom - beforeRail.zoom) < .001);
+  // Sidebar context is inherited when creating a new node.
+  await page.locator(".kn-new-button").click();
+  const editor = page.locator(".kg-dock-editor"); await editor.waitFor(); await page.locator(".kn-node.is-draft").waitFor(); await pause(850);
+  assert.equal(await editor.getByLabel("分类", { exact: true }).count(), 0);
+  assert.equal(await editor.getByLabel("知识域", { exact: true }).count(), 0);
+  assert.match(await editor.locator(".kg-inherit-card").innerText(), /前端/);
+  assert.match(await editor.locator(".kg-inherit-card").innerText(), /开发/);
+  const typingViewport = await viewport();
+  await editor.getByLabel(/知识标题/).fill("交互规范·回归测试"); await pause(180);
+  assert.match(await page.locator(".kn-node.is-draft").innerText(), /交互规范·回归测试/);
+  const afterTyping = await viewport();
+  assert.ok(Math.abs(typingViewport.zoom - afterTyping.zoom) < .001 && Math.abs(typingViewport.x - afterTyping.x) < 1, "typing does not recenter graph");
+  await editor.getByLabel(/知识内容/).fill("组件行为要符合一致性、可预期性和可访问性。\n".repeat(12));
+  const editorBox = await editor.locator(".kg-dock-scroll").boundingBox();
+  const beforeScroll = await viewport();
+  await page.mouse.move(editorBox.x + editorBox.width - 12, editorBox.y + 40); await page.mouse.wheel(0, 350); await pause(250);
+  assert.ok(Math.abs((await viewport()).zoom - beforeScroll.zoom) < .001, "editor scrolling never zooms map");
+  page.once("dialog", dialog => dialog.dismiss());
+  await page.getByRole("button", { name: "打开创作知识域", exact: true }).click();
+  assert.ok(await editor.isVisible(), "cancelled navigation keeps dirty editor");
+  await page.getByRole("button", { name: "保存到知识网", exact: true }).click();
+  await editor.waitFor({ state: "hidden" }); await pause(850);
+  let stored = await page.evaluate(() => JSON.parse(localStorage.getItem("astra:preview:templates:v1") || "[]"));
+  const created = stored.find(entry => entry.name === "交互规范·回归测试");
+  assert.ok(created && created.library === "frontend" && created.category === "开发" && created.tags.includes("交互"));
+  await page.screenshot({ path: "artifacts/knowledge-ordered-detail.png" });
+  await page.getByRole("button", { name: "编辑当前知识", exact: true }).click();
+  await page.locator(".kg-dock-editor").getByLabel(/用途说明/).fill("保存后可复用的交互规范");
+  await page.getByRole("button", { name: "保存到知识网", exact: true }).click(); await pause(700);
+  await page.getByRole("button", { name: "从此新建关联知识", exact: true }).click();
+  await page.locator(".kg-dock-editor").getByLabel(/知识标题/).fill("交互规范·关联节点");
+  await page.locator(".kg-dock-editor").getByLabel(/知识内容/).fill("参考已有规范设计新的组件。");
+  await page.getByRole("button", { name: "保存到知识网", exact: true }).click(); await pause(750);
+  stored = await page.evaluate(() => JSON.parse(localStorage.getItem("astra:preview:templates:v1") || "[]"));
+  assert.ok(stored.find(entry => entry.name === "交互规范·关联节点").relations.some(relation => relation.targetId === created.id));
+  console.log("PASS: independent rail/editor scroll, in-canvas create/edit, inherited tags, dirty protection, saved relationships");
 
-  // 查看全部知识 → 12 条条目
-  await page.getByRole("button", { name: /查看全部知识/ }).click();
-  await waitNodes(12);
-
-  await page.locator(".react-flow__node").first().focus(); await page.keyboard.press("Enter");
-  await page.locator(".react-flow__edge").first().dispatchEvent("click");
-  await page.locator(".kg-inspector").getByText("关系详情", { exact: true }).waitFor();
-  await page.locator(".kg-inspector").getByRole("button", { name: "关闭关系详情" }).click();
-  await page.locator(".react-flow__node").first().click();
-  await page.mouse.move(0, 0); await page.waitForTimeout(450);
-  await page.screenshot({ path: "artifacts/knowledge-desktop.png", fullPage: true });
-
-  // 新建知识（默认按分类 → 中心知识域）
-  await page.getByRole("button", { name: "新建知识", exact: true }).click();
-  let dialog = page.getByRole("dialog");
-  await dialog.getByLabel(/知识标题/).fill("测试知识·交互验证");
-  await dialog.getByLabel(/知识内容/).fill("这是交互测试的参考内容。所有按钮和来源均应可追溯。");
-  await dialog.getByLabel("添加关键词").fill("交互"); await dialog.getByLabel("添加关键词").press("Enter");
-  await dialog.getByLabel(/来源链接/).fill("https://example.com/spec");
-  await dialog.getByLabel("关联知识").selectOption("101"); await dialog.getByRole("button", { name: "添加关系", exact: true }).click();
-  await dialog.getByRole("button", { name: "保存知识", exact: true }).click();
-  await dialog.waitFor({ state: "hidden" });
-  let rows = await stored(); const first = rows.find(row => row.name === "测试知识·交互验证");
-  assert.ok(first); assert.equal(first.sourceUrl, "https://example.com/spec"); assert.deepEqual(first.relations, [{ targetId: 101, kind: "references" }]);
-  assert.ok((await page.locator(".kg-library-current").innerText()).includes("中心"), "保存后应跳到该知识所在的知识域");
-
-  await page.reload(); await page.getByRole("button", { name: "知识库", exact: true }).click();
-  await page.locator(".kg-flow-library").first().waitFor();
-  await search("测试知识·交互验证");
-  await page.locator(".kg-inspector").getByRole("heading", { name: "测试知识·交互验证" }).waitFor();
-  await page.getByRole("button", { name: "聚焦关联知识", exact: true }).click();
-  await page.locator(".kg-focus-banner").waitFor();
-  await page.getByRole("button", { name: /返回全图/ }).click();
-  await search("测试知识·交互验证");
-  await page.getByRole("button", { name: "新建知识", exact: true }).click(); dialog = page.getByRole("dialog");
-  await dialog.getByLabel(/知识标题/).fill("测试知识·引用方"); await dialog.getByLabel(/知识内容/).fill("引用另一条测试知识。");
-  await dialog.getByLabel("关联知识").selectOption(String(first.id)); await dialog.getByRole("button", { name: "添加关系", exact: true }).click();
-  await dialog.getByRole("button", { name: "保存知识", exact: true }).click(); await dialog.waitFor({ state: "hidden" });
-  await search("测试知识·交互验证"); await page.getByRole("button", { name: "删除当前知识", exact: true }).click();
+  // Delete cleans incoming relations, without disturbing unrelated knowledge.
+  await page.getByRole("button", { name: "关闭知识详情", exact: true }).click();
+  await page.getByRole("combobox", { name: "搜索知识", exact: true }).fill("交互规范·回归测试");
+  await page.getByRole("option").first().click(); await pause(650);
+  await page.getByRole("button", { name: "删除当前知识", exact: true }).click();
   await page.getByRole("dialog").getByRole("button", { name: "确认删除", exact: true }).click();
-  await page.getByRole("dialog").waitFor({ state: "hidden" });
-  rows = await stored(); assert.ok(!rows.some(row => row.id === first.id));
-  assert.ok(rows.find(row => row.name === "测试知识·引用方").relations.every(relation => relation.targetId !== first.id));
+  await page.getByRole("dialog").waitFor({ state: "hidden" }); await pause(400);
+  stored = await page.evaluate(() => JSON.parse(localStorage.getItem("astra:preview:templates:v1") || "[]"));
+  assert.ok(!stored.some(entry => entry.id === created.id));
+  assert.ok(stored.find(entry => entry.name === "交互规范·关联节点").relations.every(relation => relation.targetId !== created.id));
+  await page.getByRole("tab", { name: /内置示例/ }).click(); await pause();
+  assert.equal(await page.locator(".kn-node-entry").count(), 9);
+  await page.getByRole("tab", { name: /我的知识/ }).click(); await pause();
+  await page.getByRole("button", { name: "适应画布", exact: true }).click(); await pause();
+  const blank = await page.locator(".kn-viewport").boundingBox();
+  await page.mouse.click(blank.x + 8, blank.y + blank.height * .43, { button: "right" });
+  await page.getByRole("menuitem", { name: "在这里新建知识", exact: true }).click();
+  await page.locator(".kg-dock-editor").waitFor(); await pause(450);
+  await page.getByRole("button", { name: "关闭编辑面板", exact: true }).click();
+  await page.getByRole("button", { name: "适应画布", exact: true }).click(); await pause();
+  await page.mouse.dblclick(blank.x + 8, blank.y + blank.height * .43);
+  await page.locator(".kg-dock-editor").waitFor(); await pause(450);
+  await page.getByRole("button", { name: "关闭编辑面板", exact: true }).click();
+  await page.getByRole("button", { name: "恢复百分之百缩放", exact: true }).click(); await pause(350);
+  assert.ok(Math.abs((await viewport()).zoom - 1) < .005);
+  console.log("PASS: delete relationship cleanup, built-in examples, context-menu create, blank double-click create, 100% reset");
 
-  // 切换到「创作」子库（6 条），再按分类筛选
-  await page.locator(".kg-library-chips button", { hasText: "创作" }).click();
-  await waitNodes(6 + 4 + 1); // 核 + 4 类目 + 6 条目
-  assert.ok((await page.locator(".kg-library-current").innerText()).includes("创作"));
-  await page.getByRole("combobox", { name: "筛选知识分类" }).selectOption("品牌");
-  await waitNodes(1 + 1 + 2); // 核 + 品牌类目 + 2 条
-  await page.getByRole("combobox", { name: "搜索知识" }).fill("");
-  await page.getByRole("combobox", { name: "筛选知识分类" }).selectOption("全部");
-  await waitNodes(11);
-
-  await page.getByRole("button", { name: "卡片", exact: true }).click();
-  assert.ok(await page.locator(".kg-knowledge-card").count() > 0);
-  await page.locator(".kg-card-title").first().click(); await page.getByRole("dialog").getByRole("tab", { name: "原文", exact: true }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "关闭弹窗" }).click();
-  await page.getByRole("button", { name: "图谱", exact: true }).click();
-  await page.getByRole("button", { name: "分类结构", exact: true }).click();
-  assert.ok(await page.locator(".kg-flow-category").count() > 0);
-  await page.getByRole("button", { name: "关联网络", exact: true }).click();
-  await page.getByRole("checkbox", { name: "显示共享关键词" }).check();
-  await page.locator(".kg-flow-topic").first().waitFor();
-  assert.ok(await page.locator(".kg-flow-topic").count() > 0);
-  await page.getByRole("checkbox", { name: "显示共享关键词" }).uncheck();
-  await page.getByRole("button", { name: "切换为暗色模式" }).click(); await page.waitForTimeout(350);
-  await page.screenshot({ path: "artifacts/knowledge-dark.png", fullPage: true });
-  await page.getByRole("button", { name: "切换为白色模式" }).click();
-  await page.setViewportSize({ width: 390, height: 844 }); await page.evaluate(() => window.scrollTo(0, 0)); await page.waitForTimeout(900);
-  await page.screenshot({ path: "artifacts/knowledge-mobile.png", fullPage: true });
-  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1));
-  const mobileZoom = parseInt(await page.locator(".kg-canvas-controls > span").innerText(), 10);
-  assert.ok(mobileZoom >= 70, `mobile graph should stay readable, got ${mobileZoom}%`);
-  await page.getByRole("button", { name: "新建知识", exact: true }).click();
-  await page.getByRole("dialog").getByLabel(/知识标题/).fill("手机编辑测试");
-  await page.screenshot({ path: "artifacts/knowledge-mobile-editor.png", fullPage: true });
+  // Global search reveals a result without live re-layout while typing.
+  await page.getByRole("button", { name: "打开前端知识域", exact: true }).click(); await pause();
+  await page.getByRole("combobox", { name: "搜索知识", exact: true }).fill("品牌语气规范");
+  await page.getByRole("option").first().click(); await pause(800);
+  assert.match(await page.locator(".kg-inspector").innerText(), /品牌语气规范/);
+  await page.getByRole("button", { name: "关闭知识详情", exact: true }).click();
+  await page.getByRole("button", { name: "筛选知识与关系", exact: true }).click();
+  await page.getByLabel("显示关系", { exact: true }).selectOption("manual");
+  assert.equal(await page.locator('.react-flow__edge[data-id^="shared:"]').count(), 0, "manual filter hides inferred keyword edges");
+  await page.getByRole("button", { name: "重置筛选", exact: true }).click();
+  await page.getByRole("button", { name: "关闭筛选", exact: true }).click();
+  await page.getByRole("button", { name: "全屏知识网", exact: true }).click(); await pause(350);
+  assert.ok(await page.locator(".kn-board.is-fullscreen").isVisible());
+  await page.getByRole("button", { name: "退出全屏", exact: true }).click();
+  await page.getByRole("button", { name: "切换为暗色模式", exact: true }).click(); await pause(400);
+  await page.screenshot({ path: "artifacts/knowledge-ordered-dark.png" });
+  await page.getByRole("button", { name: "切换为白色模式", exact: true }).click();
+  await page.setViewportSize({ width: 980, height: 820 }); await pause(500);
+  await page.getByRole("button", { name: "适应画布", exact: true }).click(); await pause(500);
+  await page.locator(".kn-node-entry").first().click(); await pause(500);
+  const tabletView = await page.locator(".kn-viewport").boundingBox();
+  const tabletDock = await page.locator(".kn-dock").boundingBox();
+  assert.ok(tabletDock.y >= tabletView.y + tabletView.height - 2, "tablet inspector occupies its own vertical section");
+  assert.ok(await page.getByRole("button", { name: "适应画布", exact: true }).isVisible());
+  await page.screenshot({ path: "artifacts/knowledge-ordered-tablet.png" });
+  await page.getByRole("button", { name: "关闭知识详情", exact: true }).click();
+  await page.setViewportSize({ width: 390, height: 844 }); await pause(700);
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), "no horizontal overflow on mobile");
+  await page.getByRole("button", { name: "展开标签导航", exact: true }).click();
+  await page.getByRole("button", { name: "打开前端·开发分类", exact: true }).click(); await pause(600);
+  assert.equal(await page.locator(".kn-sidebar").count(), 0, "mobile navigation closes after selecting a tag");
+  await page.screenshot({ path: "artifacts/knowledge-ordered-mobile.png" });
+  await page.locator(".kn-new-button").click(); await pause(600);
+  assert.ok(await page.locator(".kg-dock-editor").isVisible());
+  assert.ok(await page.getByRole("button", { name: "保存到知识网", exact: true }).isVisible());
   assert.deepEqual(errors, []);
-  console.log("PASS: hub, sub-library orbit, back navigation, all-view, relations, persistence, focus, delete cleanup, filters, cards, layouts, topics, dark mode, mobile; no browser errors.");
+  console.log("PASS: search, filters, fullscreen, dark mode, mobile label navigation and editing; no browser errors");
+} catch (error) {
+  await page.screenshot({ path: "artifacts/knowledge-test-failure.png", fullPage: true });
+  throw error;
 } finally { await browser.close(); }

@@ -1,48 +1,51 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, ArrowUpRight, BookOpen, Check, ChevronDown, CircleHelp, Compass, Database, Download, FileText, Focus, GitBranch, Layers3, LayoutTemplate, Link2, Network, Orbit, Pencil, PenTool, Plus, Search, SlidersHorizontal, Sparkles, Trash2, X } from "lucide-react";
-
-const LIBRARY_ICONS: Record<string, typeof Compass> = { compass: Compass, layout: LayoutTemplate, database: Database, pen: PenTool };
-import KnowledgeNetwork from "@/components/KnowledgeNetwork";
-import KnowledgeEditor, { type KnowledgeDraft } from "@/components/knowledge/KnowledgeEditor";
+import { ArrowRight, Check, ChevronRight, CircleHelp, Download, FileText, Focus, GitBranch, Layers3, PanelLeft, Plus, Search, SlidersHorizontal, X } from "lucide-react";
+import KnowledgeNetwork, { type DraftPreview } from "@/components/KnowledgeNetwork";
+import KnowledgeTree from "@/components/knowledge/KnowledgeTree";
+import KnowledgeEditor, { type KnowledgeDraft, type KnowledgePreset } from "@/components/knowledge/KnowledgeEditor";
 import KnowledgeInspector, { RelationInspector } from "@/components/knowledge/KnowledgeInspector";
 import Dialog from "@/components/knowledge/Dialog";
 import type { KnowledgeEntry } from "@/lib/knowledge";
 import { buildKnowledgeGraph, neighborhood, type GraphEdge } from "@/lib/knowledge-graph";
-import { LIBRARIES, buildHubGraph, libraryById, libraryCounts, libraryForEntry, type KnowledgeLibrary } from "@/lib/knowledge-library";
-import { paletteForEntry } from "@/lib/knowledge-palette";
+import { LIBRARIES, libraryById, libraryForEntry } from "@/lib/knowledge-library";
+import { ALL_KNOWLEDGE, belongsToBranch, orderedKnowledgeGraph, type KnowledgeBranch } from "@/lib/knowledge-layout";
 import "@/knowledge-studio.css";
+import "@/knowledge-workspace.css";
 
 type Notice = { text: string; error?: boolean };
+type EditorSession = { key: string; entry: KnowledgeEntry | null; preset?: KnowledgePreset };
 export default function KnowledgePanel({ onUseKnowledge }: { onUseKnowledge: (text: string, scenario: string) => void }) {
   const [entries, setEntries] = useState<KnowledgeEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [scope, setScope] = useState<"mine" | "builtin">("mine");
-  const [activeLibrary, setActiveLibrary] = useState<string | null>(null);
-  const [view, setView] = useState<"graph" | "cards">("graph");
+  const [branch, setBranch] = useState<KnowledgeBranch>(ALL_KNOWLEDGE);
+  const [navigationOpen, setNavigationOpen] = useState(() => typeof window === "undefined" || window.innerWidth > 760);
   const [query, setQuery] = useState("");
-  const [category, setCategory] = useState("全部");
-  const [tag, setTag] = useState("全部");
-  const [layout, setLayout] = useState<"network" | "category" | "orbit">("network");
-  const [showTopics, setShowTopics] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchIndex, setSearchIndex] = useState(0);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [relationFilter, setRelationFilter] = useState("all");
+  const [enabledOnly, setEnabledOnly] = useState(false);
   const [focusId, setFocusId] = useState<string | null>(null);
   const [depth, setDepth] = useState(1);
-  const [limit, setLimit] = useState(40);
+  const [limit, setLimit] = useState(80);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [selectedEdge, setSelectedEdge] = useState<GraphEdge | null>(null);
   const [centerSignal, setCenterSignal] = useState(0);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [searchIndex, setSearchIndex] = useState(0);
-  const [editor, setEditor] = useState<{ entry: KnowledgeEntry | null } | null>(null);
-  const [detail, setDetail] = useState<KnowledgeEntry | null>(null);
+  const [editor, setEditor] = useState<EditorSession | null>(null);
+  const [draftPreview, setDraftPreview] = useState<DraftPreview | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<KnowledgeEntry | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [help, setHelp] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [copied, setCopied] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
+  const filtersRef = useRef<HTMLDivElement>(null);
+  const dirtyRef = useRef(false);
+  const busyRef = useRef(false);
 
   const load = useCallback(async () => {
     setLoadError("");
@@ -52,88 +55,106 @@ export default function KnowledgePanel({ onUseKnowledge }: { onUseKnowledge: (te
       const data = await response.json();
       if (!Array.isArray(data.entries)) throw new Error("知识数据格式不正确。");
       setEntries(data.entries);
-      setSelectedId(old => old ?? data.entries.find((item: KnowledgeEntry) => !item.isBuiltin)?.id ?? null);
     } catch (error) { setLoadError(error instanceof Error ? error.message : "知识库加载失败。"); }
     finally { setLoading(false); }
   }, []);
   useEffect(() => { void load(); }, [load]);
-  useEffect(() => { if (!notice) return; const timer = window.setTimeout(() => setNotice(null), 5000); return () => window.clearTimeout(timer); }, [notice]);
-  useEffect(() => { const close = (event: MouseEvent) => { if (!searchRef.current?.contains(event.target as Node)) setSearchOpen(false); }; document.addEventListener("mousedown", close); return () => document.removeEventListener("mousedown", close); }, []);
+  useEffect(() => { if (!notice) return; const timer = window.setTimeout(() => setNotice(null), 4200); return () => window.clearTimeout(timer); }, [notice]);
+  useEffect(() => {
+    const close = (event: MouseEvent) => {
+      if (!searchRef.current?.contains(event.target as Node)) setSearchOpen(false);
+      if (!filtersRef.current?.contains(event.target as Node)) setFiltersOpen(false);
+    };
+    const shortcuts = (event: KeyboardEvent) => {
+      if (event.key === "/" && !(event.target as Element).closest("input, textarea, select, [contenteditable]")) { event.preventDefault(); searchInput.current?.focus(); }
+      if (event.key === "Escape") { setSearchOpen(false); setFiltersOpen(false); }
+    };
+    document.addEventListener("mousedown", close); window.addEventListener("keydown", shortcuts);
+    const mobile = window.matchMedia("(max-width: 760px)");
+    const adapt = () => { if (mobile.matches) setNavigationOpen(false); };
+    mobile.addEventListener("change", adapt);
+    return () => { document.removeEventListener("mousedown", close); window.removeEventListener("keydown", shortcuts); mobile.removeEventListener("change", adapt); };
+  }, []);
 
   const custom = useMemo(() => entries.filter(item => !item.isBuiltin), [entries]);
   const builtin = useMemo(() => entries.filter(item => item.isBuiltin), [entries]);
   const source = scope === "mine" ? custom : builtin;
-  // null → 中心图谱（四个大知识库）；"all" → 全部知识；其余 → 对应子库。
-  const isHubView = view === "graph" && activeLibrary === null;
-  const currentLibrary: KnowledgeLibrary | null = activeLibrary && activeLibrary !== "all" ? libraryById(activeLibrary) : null;
-  const scoped = useMemo(() => source.filter(item => !activeLibrary || activeLibrary === "all" || libraryForEntry(item) === activeLibrary), [source, activeLibrary]);
-  const counts = useMemo(() => libraryCounts(source), [source]);
-  const categories = useMemo(() => [...new Set(scoped.map(item => item.category || "通用"))], [scoped]);
-  const tags = useMemo(() => [...new Set(scoped.flatMap(item => item.tags || []))].slice(0, 10), [scoped]);
-  const enabled = custom.filter(item => item.enabled !== false).length;
-  const fullGraph = useMemo(() => buildKnowledgeGraph(custom, { limit: 100000 }), [custom]);
-
-  // 当用户在子库中点击/选中某个分类（细致分支）时，或者选中了一条知识且处于分类隔离模式时，
-  // 只显示对应分支的内容，不展示其他无关分支。
-  const branchCategory = category !== "全部" ? category : null;
-
-  const filtered = useMemo(() => scoped.filter(item => {
-    const text = `${item.name} ${item.description} ${item.templateText} ${(item.tags || []).join(" ")}`.toLowerCase();
-    const inBranch = !branchCategory || item.category === branchCategory;
-    return inBranch && (tag === "全部" || item.tags?.includes(tag)) && (!query.trim() || text.includes(query.trim().toLowerCase()));
-  }), [scoped, branchCategory, tag, query]);
-  const hubGraph = useMemo(() => buildHubGraph(source), [source]);
-  const effectiveLayout = layout === "orbit" ? (currentLibrary ? "orbit" : "network") : layout;
-  const baseGraph = useMemo(() => isHubView ? hubGraph : buildKnowledgeGraph(filtered, {
-    layout: effectiveLayout, showTopics, limit,
-    core: currentLibrary ? { label: currentLibrary.name, accent: currentLibrary.accent, tagline: currentLibrary.tagline } : undefined,
-  }), [isHubView, hubGraph, filtered, effectiveLayout, showTopics, limit, currentLibrary]);
-  const graph = useMemo(() => {
-    let edges = baseGraph.edges.filter(edge => relationFilter === "all" || (relationFilter === "manual" ? edge.origin === "用户标注" : edge.origin === "共享关键词"));
-    let nodes = baseGraph.nodes;
-    if (focusId) {
-      const ids = neighborhood({ ...baseGraph, edges }, focusId, depth);
-      nodes = nodes.filter(node => ids.has(node.id));
-      edges = edges.filter(edge => ids.has(edge.source) && ids.has(edge.target));
+  const catalogGraph = useMemo(() => buildKnowledgeGraph(source, { limit: 10000 }), [source]);
+  const focusedIds = useMemo(() => focusId ? neighborhood(catalogGraph, focusId, depth) : null, [catalogGraph, focusId, depth]);
+  const filtered = useMemo(() => source.filter(item => belongsToBranch(item, branch) && (!enabledOnly || item.enabled !== false) && (!focusedIds || focusedIds.has(`entry:${item.id}`))), [source, branch, enabledOnly, focusedIds]);
+  const baseGraph = useMemo(() => orderedKnowledgeGraph(filtered, branch, limit), [filtered, branch, limit]);
+  const graph = useMemo(() => ({ ...baseGraph, edges: baseGraph.edges.filter(edge => edge.kind === "contains" || edge.kind === "topic" || relationFilter === "all" || (relationFilter === "manual" ? edge.origin === "用户标注" : relationFilter === "shared" ? edge.origin === "共享关键词" : false)) }), [baseGraph, relationFilter]);
+  const searchResults = useMemo(() => {
+    const value = query.trim().toLowerCase();
+    if (!value) return [];
+    return source.filter(item => `${item.name} ${item.description} ${item.templateText} ${(item.tags || []).join(" ")}`.toLowerCase().includes(value));
+  }, [source, query]);
+  const matchedIds = useMemo(() => query.trim() ? searchResults.map(item => item.id) : null, [query, searchResults]);
+  const currentLibrary = libraryById(branch.library);
+  const selectedEntry = entries.find(item => item.id === selectedId) || null;
+  const hasFilters = relationFilter !== "all" || enabledOnly;
+  const viewKey = JSON.stringify([scope, branch.library, branch.category, branch.tag, focusId, depth, enabledOnly]);
+  const closeEditor = useCallback(() => { setEditor(null); setDraftPreview(null); dirtyRef.current = false; busyRef.current = false; }, []);
+  const canLeaveEditor = useCallback(() => {
+    if (busyRef.current) { setNotice({ text: "正在保存，请稍候。" }); return false; }
+    if (dirtyRef.current && !window.confirm("有尚未保存的知识内容，确定放弃修改并切换吗？")) return false;
+    closeEditor(); return true;
+  }, [closeEditor]);
+  const navigate = (next: KnowledgeBranch) => {
+    if (!canLeaveEditor()) return;
+    setBranch(next); setSelectedId(null); setSelectedEdge(null); setFocusId(null); setQuery(""); setSearchOpen(false); setLimit(80);
+    if (window.innerWidth <= 760) setNavigationOpen(false);
+  };
+  const switchScope = (next: "mine" | "builtin") => {
+    if (!canLeaveEditor()) return;
+    setScope(next); setBranch(ALL_KNOWLEDGE); setFocusId(null); setSelectedId(null); setSelectedEdge(null); setQuery("");
+  };
+  const selectEntry = (id: number, reveal = false) => {
+    if (!canLeaveEditor()) return;
+    const entry = entries.find(item => item.id === id);
+    if (!entry) return;
+    if (!graph.nodes.some(node => node.id === `entry:${id}`)) {
+      setScope(entry.isBuiltin ? "builtin" : "mine");
+      setBranch({ library: libraryForEntry(entry), category: entry.category || "通用", tag: "" });
+      setFocusId(null); setEnabledOnly(false); setLimit(80);
+      reveal = true;
     }
-    return { ...baseGraph, nodes, edges };
-  }, [baseGraph, relationFilter, focusId, depth]);
-  const selectedEntry = graph.nodes.find(node => node.id === `entry:${selectedId}`)?.entry;
-  const hasFilters = category !== "全部" || tag !== "全部" || !!query || !!focusId || relationFilter !== "all";
-  const resetFilters = () => { setCategory("全部"); setTag("全部"); setQuery(""); setFocusId(null); setRelationFilter("all"); };
-  const switchScope = (next: "mine" | "builtin") => { setScope(next); backToHub(); };
-  const selectEntry = useCallback((id: number) => { setSelectedId(id); setSelectedEdge(null); }, []);
-  const focusNode = useCallback((id: string) => { setFocusId(old => old === id ? null : id); setSelectedEdge(null); }, []);
-  const enterLibrary = (id: string) => {
-    setActiveLibrary(id);
-    setLayout("orbit");
-    resetFilters();
-    setSelectedEdge(null); setDetail(null);
-    setSelectedId(null);
-    setCenterSignal(value => value + 1);
+    setSelectedId(id); setSelectedEdge(null);
+    if (reveal) setCenterSignal(value => value + 1);
   };
-  const backToHub = () => {
-    setActiveLibrary(null); setLayout("network"); resetFilters();
-    setSelectedId(null); setSelectedEdge(null); setDetail(null); setFocusId(null);
+  const focusNode = (id: string) => {
+    if (!canLeaveEditor()) return;
+    setFocusId(old => old === id ? null : id); setBranch(ALL_KNOWLEDGE); setSelectedEdge(null);
   };
-  const chooseSearch = (entry: KnowledgeEntry) => {
-    const library = libraryForEntry(entry);
-    if (view === "graph" && activeLibrary !== "all" && library !== activeLibrary) {
-      setActiveLibrary(library); setLayout("orbit"); resetFilters();
-    } else { setCategory("全部"); setTag("全部"); setFocusId(null); }
-    selectEntry(entry.id); setSearchOpen(false); setCenterSignal(value => value + 1);
-    if (view === "cards") setDetail(entry);
+  const chooseSearch = (entry: KnowledgeEntry) => { selectEntry(entry.id, true); setSearchOpen(false); setQuery(""); };
+  const openCreate = (point?: { x: number; y: number }, relatedId?: number) => {
+    if (!canLeaveEditor()) return;
+    const selected = selectedId ? entries.find(item => item.id === selectedId && !item.isBuiltin) : null;
+    const related = (relatedId ? entries.find(item => item.id === relatedId) : selected) || null;
+    const preset: KnowledgePreset = {
+      library: related ? libraryForEntry(related) : branch.library !== "all" ? branch.library : undefined,
+      category: related?.category || branch.category || undefined,
+      tags: related?.tags?.slice(0, 6) || (branch.tag ? [branch.tag] : []),
+      relatedId: related?.id,
+    };
+    const key = `new-${Date.now()}`;
+    setScope("mine"); setSelectedEdge(null); setSelectedId(null); setEditor({ key, entry: null, preset });
+    setDraftPreview({ key, name: "", category: preset.category || "通用", position: point, relatedId: related?.id });
+    if (window.innerWidth <= 760) setNavigationOpen(false);
   };
+  const handleDraftChange = useCallback((next: { name: string; category: string }) => setDraftPreview(old => old && (old.name !== next.name || old.category !== next.category) ? { ...old, ...next } : old), []);
+  const handleDirtyChange = useCallback((dirty: boolean, busy: boolean) => { dirtyRef.current = dirty; busyRef.current = busy; }, []);
   const save = async (draft: KnowledgeDraft) => {
-    const response = await fetch("/api/knowledge", { method: editor?.entry ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...draft, ...(editor?.entry ? { id: editor.entry.id } : {}) }) });
+    const editing = Boolean(editor?.entry);
+    const response = await fetch("/api/knowledge", { method: editing ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...draft, ...(editor?.entry ? { id: editor.entry.id } : {}) }) });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "保存失败，请重试。");
-    const savedLibrary = libraryForEntry({ library: data.library, category: data.category });
-    setEditor(null); setScope("mine"); resetFilters();
-    setActiveLibrary(savedLibrary); setLayout("orbit");
-    setSelectedId(data.id); setCenterSignal(value => value + 1);
-    await load(); window.dispatchEvent(new CustomEvent("astra:knowledge-updated"));
-    setNotice({ text: "知识已保存，图谱关联已更新。" });
+    const saved = data as KnowledgeEntry;
+    await load();
+    if (!belongsToBranch(saved, branch)) setBranch({ library: libraryForEntry(saved), category: saved.category || "通用", tag: "" });
+    closeEditor(); setScope("mine"); setFocusId(null); setEnabledOnly(false); setQuery(""); setSelectedId(saved.id); setCenterSignal(value => value + 1);
+    window.dispatchEvent(new CustomEvent("astra:knowledge-updated"));
+    setNotice({ text: editing ? "知识已更新，关联同步保存。" : "知识已保存，已加入当前知识网。" });
   };
   const toggle = async (entry: KnowledgeEntry) => {
     const enabled = entry.enabled === false;
@@ -141,7 +162,6 @@ export default function KnowledgePanel({ onUseKnowledge }: { onUseKnowledge: (te
       const response = await fetch("/api/knowledge", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: entry.id, enabled }) });
       if (!response.ok) throw new Error();
       setEntries(old => old.map(item => item.id === entry.id ? { ...item, enabled } : item));
-      setDetail(old => old?.id === entry.id ? { ...old, enabled } : old);
       window.dispatchEvent(new CustomEvent("astra:knowledge-updated"));
       setNotice({ text: enabled ? "已启用，相关内容会参与提示词构建。" : "已停用，不再参与提示词构建。" });
     } catch { setNotice({ text: "状态更新失败，请重试。", error: true }); }
@@ -152,9 +172,8 @@ export default function KnowledgePanel({ onUseKnowledge }: { onUseKnowledge: (te
     try {
       const response = await fetch(`/api/knowledge?id=${deleteTarget.id}`, { method: "DELETE" });
       if (!response.ok) throw new Error();
-
-      setDeleteTarget(null); setSelectedId(null); setSelectedEdge(null); setFocusId(null); setDetail(null);
-      await load(); window.dispatchEvent(new CustomEvent("astra:knowledge-updated")); setNotice({ text: "知识条目及指向它的明确关系已删除。" });
+      setDeleteTarget(null); setSelectedId(null); setSelectedEdge(null); setFocusId(null);
+      await load(); window.dispatchEvent(new CustomEvent("astra:knowledge-updated")); setNotice({ text: "已删除知识及指向它的明确关系。" });
     } catch { setNotice({ text: "删除失败，请检查浏览器存储权限后重试。", error: true }); }
     finally { setDeleting(false); }
   };
@@ -166,53 +185,55 @@ export default function KnowledgePanel({ onUseKnowledge }: { onUseKnowledge: (te
   const exportData = () => {
     const blob = new Blob([JSON.stringify({ version: 2, exportedAt: new Date().toISOString(), entries: custom }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob); const anchor = document.createElement("a"); anchor.href = url; anchor.download = `astra-knowledge-${new Date().toISOString().slice(0, 10)}.json`; anchor.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    setNotice({ text: `已导出 ${custom.length} 条知识，包含来源与关系。` });
+    setNotice({ text: `已导出 ${custom.length} 条知识及其关系。` });
   };
-  const inspector = (entry: KnowledgeEntry) => <KnowledgeInspector key={entry.id} entry={entry} edges={baseGraph.edges} entries={entries} onSelect={id => { selectEntry(id); setCenterSignal(value => value + 1); setDetail(entries.find(item => item.id === id) || null); }} onEdit={() => { setDetail(null); setEditor({ entry }); }} onUse={() => onUseKnowledge(entry.templateText, entry.scenario || "auto")} onToggle={() => void toggle(entry)} onCopy={() => void copy(entry)} copied={copied} onFocus={() => { setDetail(null); setView("graph"); focusNode(`entry:${entry.id}`); }} focused={focusId === `entry:${entry.id}`} onClose={() => { setSelectedId(null); setDetail(null); }} onDelete={() => { setDetail(null); setDeleteTarget(entry); }} />;
-
-  return <div className="kg-page">
-    <header className="kg-page-header"><div><div className="kg-title-line"><h1>知识库</h1><span className="kg-workspace-badge">个人知识空间</span></div><p>把零散的经验，连接成可复用的知识。</p></div><div className="kg-header-actions"><button className="kg-icon kg-help-mobile" onClick={() => setHelp(true)} aria-label="图谱构建说明"><CircleHelp size={17} /></button><button className="kg-button kg-export" onClick={exportData} disabled={!custom.length} aria-label="导出知识备份"><Download size={15} />导出</button><button className="kg-button kg-primary" onClick={() => setEditor({ entry: null })}><Plus size={17} />新建知识</button></div></header>
-    <div className="kg-overview"><div><span className="kg-stat-icon"><BookOpen size={17} /></span><strong>{custom.length}</strong><span>知识条目</span></div><div><span className="kg-stat-icon"><Layers3 size={17} /></span><strong>{new Set(custom.map(item => item.category)).size}</strong><span>知识分类</span></div><div><span className="kg-stat-icon"><GitBranch size={17} /></span><strong>{fullGraph.edges.length}</strong><span>知识关联</span></div><div><span className="kg-stat-icon kg-stat-green"><Sparkles size={17} /></span><strong>{enabled}</strong><span>参与构建</span></div><button onClick={() => setHelp(true)}><CircleHelp size={15} />图谱如何构建？<ArrowUpRight size={13} /></button></div>
-    <div className="kg-library-tabs"><div role="tablist" aria-label="知识来源"><button role="tab" aria-selected={scope === "mine"} className={scope === "mine" ? "active" : ""} onClick={() => switchScope("mine")}>我的知识 <span>{custom.length}</span></button><button role="tab" aria-selected={scope === "builtin"} className={scope === "builtin" ? "active" : ""} onClick={() => switchScope("builtin")}>内置示例 <span>{builtin.length}</span></button></div><span className="kg-storage-note"><i />保存于当前浏览器</span></div>
-    <div className="kg-search-toolbar"><div className="kg-search" ref={searchRef}><Search size={17} /><input role="combobox" aria-label="搜索知识" aria-expanded={searchOpen && !!query} aria-controls="kg-search-results" aria-autocomplete="list" aria-activedescendant={searchOpen && query && filtered[searchIndex] ? `kg-result-${filtered[searchIndex].id}` : undefined} value={query} onChange={event => { setQuery(event.target.value); setSearchOpen(true); setSearchIndex(0); }} onFocus={() => setSearchOpen(true)} onKeyDown={event => { if (event.key === "ArrowDown") { event.preventDefault(); setSearchIndex(index => Math.min(index + 1, Math.min(filtered.length, 6) - 1)); } else if (event.key === "ArrowUp") { event.preventDefault(); setSearchIndex(index => Math.max(0, index - 1)); } else if (event.key === "Enter" && filtered[searchIndex]) { event.preventDefault(); chooseSearch(filtered[searchIndex]); } else if (event.key === "Escape") setSearchOpen(false); }} placeholder="搜索知识、关键词或内容…" />{query ? <button className="kg-icon" onClick={() => setQuery("")} aria-label="清空搜索"><X size={14} /></button> : <kbd>搜索</kbd>}{searchOpen && query && <div className="kg-search-results" id="kg-search-results" role="listbox">{filtered.slice(0, 6).map((entry, index) => <button key={entry.id} id={`kg-result-${entry.id}`} role="option" aria-selected={index === searchIndex} className={index === searchIndex ? "active" : ""} onMouseDown={event => event.preventDefault()} onClick={() => chooseSearch(entry)}><FileText size={15} /><span>{entry.name}<small>{entry.category}</small></span><ArrowUpRight size={13} /></button>)}{!filtered.length && <p>没有找到相关知识，试试其他关键词。</p>}</div>}</div><label className="kg-select"><SlidersHorizontal size={14} /><select aria-label="筛选知识分类" value={category} onChange={event => { setCategory(event.target.value); setFocusId(null); }}><option value="全部">全部分类</option>{categories.map(value => <option key={value}>{value}</option>)}</select><ChevronDown size={13} /></label><div className="kg-view-switch" role="group" aria-label="知识库视图"><button className={view === "graph" ? "active" : ""} aria-pressed={view === "graph"} onClick={() => setView("graph")}><Network size={15} />图谱</button><button className={view === "cards" ? "active" : ""} aria-pressed={view === "cards"} onClick={() => setView("cards")}><Layers3 size={15} />卡片</button></div></div>
-    <div className="kg-filter-row"><div className="kg-tag-filters"><span>关键词</span><button className={tag === "全部" ? "active" : ""} onClick={() => { setTag("全部"); setFocusId(null); }}>全部</button>{tags.slice(0, 7).map(value => <button key={value} className={tag === value ? "active" : ""} onClick={() => { setTag(tag === value ? "全部" : value); setFocusId(null); }}>{value}</button>)}</div><span className="kg-result-count">{filtered.length} 条结果{hasFilters && <button onClick={resetFilters}>重置 <X size={12} /></button>}</span></div>
-    {(view === "cards" || activeLibrary !== null) && <div className="kg-library-bar">
-      {view === "graph" && activeLibrary !== null && <>
-        <button className="kg-library-back" onClick={backToHub}><ArrowLeft size={14} />中心图谱</button>
-        <span className="kg-library-crumb">/</span>
-        <strong className="kg-library-current">{currentLibrary?.name || "全部知识"}</strong>
-        {branchCategory && <>
-          <span className="kg-library-crumb">/</span>
-          <span className="kg-branch-badge">{branchCategory}分支</span>
-          <button className="kg-branch-clear" onClick={() => setCategory("全部")} title="查看子库所有分支">显示全部 <X size={12} /></button>
-        </>}
-        <em>{filtered.length} 条</em>
-      </>}
-      <div className="kg-library-chips" role="group" aria-label="知识域切换">
-        <button className={activeLibrary === null || activeLibrary === "all" ? "active" : ""} onClick={backToHub}><Orbit size={13} />{view === "graph" ? "中心图谱" : "全部知识"}</button>
-        {LIBRARIES.map(library => <button key={library.id} className={activeLibrary === library.id ? "active" : ""} onClick={() => enterLibrary(library.id)}><i style={{ background: library.accent }} />{library.name}<small>{counts[library.id] || 0}</small></button>)}
+  const inspector = selectedEntry ? <div className="kg-inspector"><KnowledgeInspector key={selectedEntry.id} entry={selectedEntry} edges={catalogGraph.edges} entries={entries}
+    onSelect={id => selectEntry(id, true)} onEdit={() => { setEditor({ key: `edit-${selectedEntry.id}`, entry: selectedEntry }); setDraftPreview(null); }}
+    onUse={() => onUseKnowledge(selectedEntry.templateText, selectedEntry.scenario || "auto")} onToggle={() => void toggle(selectedEntry)}
+    onCopy={() => void copy(selectedEntry)} copied={copied} onFocus={() => focusNode(`entry:${selectedEntry.id}`)} focused={focusId === `entry:${selectedEntry.id}`}
+    onClose={() => setSelectedId(null)} onDelete={() => setDeleteTarget(selectedEntry)} onCreateRelated={selectedEntry.isBuiltin ? undefined : () => openCreate(undefined, selectedEntry.id)} /></div> : null;
+  const dock = editor ? <KnowledgeEditor key={editor.key} entry={editor.entry} entries={entries} initial={editor.preset} onSave={save} onClose={closeEditor} onDraftChange={handleDraftChange} onDirtyChange={handleDirtyChange} />
+    : selectedEdge ? <div className="kg-inspector"><RelationInspector edge={selectedEdge} entries={entries} onSelect={id => selectEntry(id, true)} onClose={() => setSelectedEdge(null)} /></div> : inspector;
+  const navigation = <KnowledgeTree entries={source} branch={branch} scope={scope} customCount={custom.length} builtinCount={builtin.length} onNavigate={navigate} onScope={switchScope} onClose={() => setNavigationOpen(false)} onCreate={() => openCreate()} />;
+  const toolbar = <>
+    <div className="kn-location"><button className={`kg-icon kn-nav-toggle ${navigationOpen ? "active" : ""}`} aria-label={navigationOpen ? "折叠标签导航" : "展开标签导航"} title="标签导航" onClick={() => setNavigationOpen(value => !value)}><PanelLeft size={17} /></button>
+      <nav className="kn-breadcrumb" aria-label="知识网路径"><button onClick={() => navigate(ALL_KNOWLEDGE)} className={branch.library === "all" ? "current" : ""}><Layers3 size={14} /><span>全部知识</span></button>{currentLibrary && <><ChevronRight size={12} /><button className={!branch.category ? "current" : ""} onClick={() => navigate({ library: branch.library, category: "", tag: "" })}>{currentLibrary.name}</button></>}{branch.category && <><ChevronRight size={12} /><button className={!branch.tag ? "current" : ""} onClick={() => navigate({ ...branch, tag: "" })}>{branch.category}</button></>}{branch.tag && <><ChevronRight size={12} /><span className="current">#{branch.tag}</span></>}</nav>
+      {focusId && <button className="kn-focus-chip" onClick={() => setFocusId(null)} title="返回完整分支"><Focus size={12} />聚焦中<X size={12} /></button>}
+    </div>
+    <div className="kn-toolbar-actions">
+      <div ref={searchRef} className="kn-search"><Search size={15} /><input ref={searchInput} value={query} onChange={event => { setQuery(event.target.value); setSearchOpen(true); setSearchIndex(0); }} onFocus={() => setSearchOpen(true)} onKeyDown={event => {
+        if (event.key === "ArrowDown") { event.preventDefault(); setSearchIndex(value => Math.min(value + 1, Math.max(0, Math.min(searchResults.length, 7) - 1))); }
+        else if (event.key === "ArrowUp") { event.preventDefault(); setSearchIndex(value => Math.max(value - 1, 0)); }
+        else if (event.key === "Enter" && searchResults[searchIndex]) { event.preventDefault(); chooseSearch(searchResults[searchIndex]); }
+        else if (event.key === "Escape") setSearchOpen(false);
+      }} role="combobox" aria-label="搜索知识" aria-expanded={searchOpen && !!query} aria-controls={searchOpen && query ? "kn-search-results" : undefined} aria-autocomplete="list" aria-activedescendant={searchOpen && query && searchResults[searchIndex] ? `kn-search-${searchResults[searchIndex].id}` : undefined} placeholder="搜索知识…" />{query ? <button className="kg-icon" onClick={() => setQuery("")} aria-label="清空搜索"><X size={13} /></button> : <kbd>/</kbd>}
+        {searchOpen && query && <div className="kn-search-results" id="kn-search-results" role="listbox"><div className="kn-search-caption">全库搜索 · {searchResults.length} 个结果</div>{searchResults.slice(0, 7).map((entry, index) => <button key={entry.id} id={`kn-search-${entry.id}`} role="option" aria-selected={index === searchIndex} className={index === searchIndex ? "active" : ""} onMouseDown={event => event.preventDefault()} onClick={() => chooseSearch(entry)}><FileText size={16} /><span>{entry.name}<small>{libraryById(libraryForEntry(entry))?.name} / {entry.category}</small></span><ArrowRight size={13} /></button>)}{!searchResults.length && <p>没有找到相关知识，试试其他关键词。</p>}</div>}
       </div>
-    </div>}
-    {notice && <div className={`kg-notice ${notice.error ? "error" : ""}`} role={notice.error ? "alert" : "status"}>{notice.error ? <CircleHelp size={16} /> : <Check size={16} />}{notice.text}<button className="kg-icon" onClick={() => setNotice(null)} aria-label="关闭提示"><X size={14} /></button></div>}
-    {loadError ? <div className="kg-empty"><CircleHelp size={30} /><h3>暂时无法加载知识库</h3><p>{loadError}</p><button className="kg-button" onClick={() => void load()}>重新加载</button></div> : loading ? <div className="kg-empty"><span className="kg-spinner" /><p>正在整理你的知识…</p></div> : view === "graph" ? <section className="kg-graph-panel">
-      <div className="kg-graph-toolbar">{isHubView ? <div className="kg-hub-hint"><Orbit size={14} />中心图谱 · 点击知识域进入子库</div> : <div className="kg-layout-switch" role="group" aria-label="图谱布局"><button className={layout === "orbit" ? "active" : ""} aria-pressed={layout === "orbit"} disabled={!currentLibrary} title={currentLibrary ? "星座轨道布局" : "进入子库后可用"} onClick={() => { setLayout("orbit"); setFocusId(null); }}><Orbit size={14} />星座轨道</button><button className={layout === "network" ? "active" : ""} aria-pressed={layout === "network"} onClick={() => { setLayout("network"); setFocusId(null); }}><Network size={14} />关联网络</button><button className={layout === "category" ? "active" : ""} aria-pressed={layout === "category"} onClick={() => { setLayout("category"); setFocusId(null); }}><Layers3 size={14} />分类结构</button></div>}<div className="kg-graph-options"><label className="kg-checkbox"><input type="checkbox" checked={showTopics} onChange={event => { setShowTopics(event.target.checked); setFocusId(null); }} />显示共享关键词</label><select aria-label="筛选关系类型" value={relationFilter} onChange={event => { setRelationFilter(event.target.value); setFocusId(null); }}><option value="all">全部关系</option><option value="shared">共享关键词</option><option value="manual">明确关系</option></select>{focusId && <select aria-label="邻域深度" value={depth} onChange={event => setDepth(Number(event.target.value))}><option value={1}>1 跳邻域</option><option value={2}>2 跳邻域</option></select>}</div></div>
-      {focusId && <div className="kg-focus-banner"><Focus size={14} /><span>正在聚焦：{baseGraph.nodes.find(node => node.id === focusId)?.label} 的 {depth} 跳关联</span><button onClick={() => setFocusId(null)}>返回全图 <X size={13} /></button></div>}
-      <div className={`kg-graph-body ${isHubView || (!selectedEdge && !selectedEntry) ? "kg-graph-full" : ""}`}><KnowledgeNetwork graph={graph} selectedId={selectedId} selectedEdgeId={selectedEdge?.id || null} onSelect={id => {
-        const item = entries.find(e => e.id === id);
-        // 点击具体细致条目时，如果是在子库，自动切换到对应细致分支，只显示该分支内容
-        if (item && currentLibrary && item.category && category === "全部") {
-          setCategory(item.category);
-        }
-        selectEntry(id);
-      }} onEdgeSelect={edge => { setSelectedEdge(edge); setSelectedId(null); }} onCategory={value => { setCategory(category === value ? "全部" : value); setFocusId(null); }} onTag={value => { setTag(tag === value ? "全部" : value); setFocusId(null); }} onFocus={focusNode} layout={effectiveLayout} centerSignal={centerSignal} onOpenLibrary={enterLibrary} onBackToHub={backToHub} />{!isHubView && (selectedEdge || selectedEntry) && <aside className="kg-inspector" aria-label="知识详情面板">{selectedEdge ? <RelationInspector edge={selectedEdge} entries={entries} onSelect={id => { selectEntry(id); setCenterSignal(value => value + 1); }} onClose={() => setSelectedEdge(null)} /> : selectedEntry ? inspector(selectedEntry) : null}</aside>}</div>
-      <footer className="kg-graph-legend">{isHubView ? <div>{LIBRARIES.map(library => <span key={library.id}><i style={{ background: library.accent }} />{library.name} · {counts[library.id] || 0} 条</span>)}</div> : <div>{categories.map(value => <span key={value}><i style={{ background: paletteForEntry({ category: value }).colors.accent }} />{value}</span>)}</div>}{isHubView ? <button className="kg-text-button" onClick={() => { setActiveLibrary("all"); setLayout("network"); resetFilters(); setSelectedId(null); setSelectedEdge(null); }}>查看全部知识 <ArrowRight size={13} /></button> : <span className="kg-edge-legend"><i />共享关键词 <b>→</b>明确关系</span>}</footer>
-    </section> : <section className="kg-card-grid">{filtered.slice(0, limit).map(entry => <article className="kg-knowledge-card" key={entry.id}><div className="kg-card-meta"><span style={{ color: paletteForEntry(entry).colors.accent }}><BookOpen size={14} />{entry.category}</span>{!entry.isBuiltin ? <button className={`kg-status ${entry.enabled !== false ? "on" : ""}`} onClick={() => void toggle(entry)} aria-pressed={entry.enabled !== false}><i />{entry.enabled !== false ? "已启用" : "已停用"}</button> : <small>内置示例</small>}</div><button className="kg-card-title" onClick={() => setDetail(entry)}>{entry.name}<ArrowUpRight size={16} /></button><p>{entry.description || entry.templateText.slice(0, 80)}</p><div className="kg-preview-tags">{(entry.tags || []).map(value => <button key={value} onClick={() => setTag(value)}>#{value}</button>)}</div><footer><button className="kg-text-button" onClick={() => setDetail(entry)}>查看详情 <ArrowRight size={13} /></button><div>{!entry.isBuiltin && <><button className="kg-icon" onClick={() => setEditor({ entry })} aria-label={`编辑 ${entry.name}`}><Pencil size={14} /></button><button className="kg-icon" onClick={() => setDeleteTarget(entry)} aria-label={`删除 ${entry.name}`}><Trash2 size={14} /></button></>}<button className="kg-text-button" onClick={() => onUseKnowledge(entry.templateText, entry.scenario || "auto")}>使用 <ArrowUpRight size={14} /></button></div></footer></article>)}</section>}
-    {!loading && !loadError && !filtered.length && <div className="kg-empty"><BookOpen size={32} /><h3>{source.length ? "没有匹配的知识" : "让第一条知识开始生长"}</h3><p>{source.length ? "换个关键词，或清除筛选后再试试。" : "保存品牌事实、写作规范或项目约定，构建提示词时就能自动参考。"}</p><button className="kg-button kg-primary" onClick={source.length ? resetFilters : () => setEditor({ entry: null })}>{source.length ? "清除筛选" : "新建知识"}<ArrowRight size={15} /></button></div>}
-    {!loading && filtered.length > limit && <button className="kg-button kg-load-more" onClick={() => setLimit(value => value + 40)}>再显示 40 条（还有 {filtered.length - limit} 条）<ChevronDown size={15} /></button>}
-    <p className="kg-bottom-note"><Sparkles size={13} />{scope === "mine" ? "已启用的知识会按当前任务自动匹配，最多引用 3 条。内置示例不会作为事实注入。" : "内置示例仅供取用，不会作为事实注入 AI 构建过程。"}</p>
-    {editor && <KnowledgeEditor key={editor.entry?.id || "new"} entry={editor.entry} entries={entries} onSave={save} onClose={() => setEditor(null)} />}
-    {detail && <Dialog title="知识详情" onClose={() => setDetail(null)}><div className="kg-detail-dialog">{inspector(detail)}</div></Dialog>}
-    {deleteTarget && <Dialog title="删除这条知识？" subtitle="此操作不可撤销，建议先导出备份。" onClose={() => { if (!deleting) setDeleteTarget(null); }} busy={deleting}><div className="kg-delete-body"><strong>{deleteTarget.name}</strong><p>条目及指向它的明确关系将被删除。历史提示词不会受到影响。</p></div><footer className="kg-dialog-footer"><button className="kg-button" disabled={deleting} onClick={() => setDeleteTarget(null)}>保留知识</button><button className="kg-button kg-danger" disabled={deleting} onClick={() => void remove()}>{deleting ? "删除中…" : "确认删除"}</button></footer></Dialog>}
-    {help && <Dialog title="让关联有依据，让知识可追溯" subtitle="轻量知识图谱 · 构建说明" onClose={() => setHelp(false)}><div className="kg-help-body">{[["01", "收集与整理", "保存标题、分类、原文和来源。关键词统一大小写与全半角，减少重复节点。"], ["02", "建立有意义的关系", "共享关键词产生主题关联；参考与依赖由你明确标注。点击连线可以查看判断依据。"], ["03", "从概览逐步探索", "先看关联网络，再按分类、关键词或关系类型筛选。双击节点查看一跳或两跳邻域。"], ["04", "校验后再用于构建", "只有已启用且与任务相关的知识会注入提示词。共享关键词不等于事实引用，来源内容仍需人工核查。"]].map(([number, title, text]) => <div key={number}><span>{number}</span><section><h3>{title}</h3><p>{text}</p></section></div>)}<h4>参考研究</h4><a href="https://neo4j.com/blog/knowledge-graph/how-to-build-knowledge-graph/" target="_blank" rel="noopener noreferrer">Neo4j · How to build a knowledge graph <ArrowUpRight size={13} /></a><a href="https://www.yfiles.com/resources/how-to/guide-to-visualizing-knowledge-graphs" target="_blank" rel="noopener noreferrer">yFiles · Knowledge graph visualization guide <ArrowUpRight size={13} /></a><a href="https://web.stanford.edu/class/cs520/2020/notes/How_Do_Users_Interact_With_a_Knowledge_Graph.html" target="_blank" rel="noopener noreferrer">Stanford · How do users interact with a knowledge graph? <ArrowUpRight size={13} /></a><a href="https://www.w3.org/TR/prov-overview/" target="_blank" rel="noopener noreferrer">W3C · PROV provenance overview <ArrowUpRight size={13} /></a><p className="kg-editor-note">当前采用关键词匹配与人工关系标注，不是 AI 实体抽取或 GraphRAG。默认显示 40 条，主题关联使用稀疏连接；完整原文与明确关系始终保留。</p></div></Dialog>}
+      <div ref={filtersRef} className="kn-filter-wrap"><button className={`kn-toolbar-icon ${hasFilters || filtersOpen ? "active" : ""}`} aria-label="筛选知识与关系" aria-expanded={filtersOpen} title="筛选" onClick={() => setFiltersOpen(value => !value)}><SlidersHorizontal size={16} />{hasFilters && <i />}</button>
+        {filtersOpen && <div className="kn-filter-popover nowheel"><header><strong>画布筛选</strong><button className="kg-icon" onClick={() => setFiltersOpen(false)} aria-label="关闭筛选"><X size={14} /></button></header><label>显示关系<select aria-label="显示关系" value={relationFilter} onChange={event => setRelationFilter(event.target.value)}><option value="all">全部关系</option><option value="manual">仅参考与依赖</option><option value="shared">仅共享关键词</option><option value="none">隐藏知识间连线</option></select></label><label className="kn-filter-check"><input type="checkbox" checked={enabledOnly} onChange={event => setEnabledOnly(event.target.checked)} />仅显示已启用知识</label>{focusId && <label>邻域范围<select aria-label="邻域深度" value={depth} onChange={event => setDepth(Number(event.target.value))}><option value={1}>1 跳关联</option><option value={2}>2 跳关联</option></select></label>}<button className="kg-text-button" onClick={() => { setRelationFilter("all"); setEnabledOnly(false); }}>重置筛选</button></div>}
+      </div>
+      <button className="kg-button kg-primary kn-new-button" onClick={() => openCreate()}><Plus size={16} /><span>新建知识</span></button>
+    </div>
+  </>;
+
+  return <div className="kg-page kg-organized">
+    <header className="kn-page-heading"><div className="kn-heading-left"><span className="kn-heading-icon"><GitBranch size={22} /></span><div><div className="kn-title"><h1>知识库</h1><span>个人知识网</span></div><p>有序整理，让每条知识都能找到联系。</p></div></div><div className="kn-heading-right"><span className="kn-header-count"><b>{custom.length}</b> 条知识<span>·</span>{LIBRARIES.length} 个知识域</span><button className="kg-button" onClick={exportData} disabled={!custom.length}><Download size={14} /><span>导出</span></button><button className="kg-icon kn-help" aria-label="知识网使用说明" title="使用说明" onClick={() => setHelp(true)}><CircleHelp size={18} /></button></div></header>
+    {loadError ? <div className="kn-state"><CircleHelp size={30} /><h3>暂时无法加载知识库</h3><p>{loadError}</p><button className="kg-button" onClick={() => void load()}>重新加载</button></div>
+      : loading ? <div className="kn-state"><span className="kg-spinner" /><p>正在整理知识网…</p></div>
+      : <KnowledgeNetwork graph={graph} viewKey={viewKey} selectedId={selectedId} selectedEdgeId={selectedEdge?.id || null} onSelect={id => selectEntry(id)}
+          onEdgeSelect={edge => { if (!canLeaveEditor()) return; setSelectedEdge(edge); setSelectedId(null); }}
+          onCategory={category => navigate({ ...branch, category, tag: "" })} onTag={tag => navigate({ ...branch, tag })} onFocus={focusNode}
+          centerSignal={centerSignal} onCreate={openCreate} onClearSelection={() => { if (!editor) { setSelectedId(null); setSelectedEdge(null); } }}
+          navigation={navigation} navigationOpen={navigationOpen} onCloseNavigation={() => setNavigationOpen(false)} toolbar={toolbar} dock={dock} draft={draftPreview} matchedIds={matchedIds}
+           onReset={() => { navigate(ALL_KNOWLEDGE); setEnabledOnly(false); setFocusId(null); }} />}
+    {baseGraph.hiddenEntries > 0 && !loading && !loadError && <button className="kn-load-more" onClick={() => setLimit(value => value + 80)}>加载更多（还有 {baseGraph.hiddenEntries} 条）</button>}
+    {notice && <div className={`kn-toast ${notice.error ? "error" : ""}`} role={notice.error ? "alert" : "status"}>{notice.error ? <CircleHelp size={16} /> : <Check size={16} />}{notice.text}<button className="kg-icon" onClick={() => setNotice(null)} aria-label="关闭提示"><X size={14} /></button></div>}
+    {deleteTarget && <Dialog title="删除这个知识节点？" subtitle="此操作不可撤销，建议先导出备份。" onClose={() => { if (!deleting) setDeleteTarget(null); }} busy={deleting}><div className="kg-delete-body"><strong>{deleteTarget.name}</strong><p>知识节点及指向它的明确关系将被删除，历史提示词不受影响。</p></div><footer className="kg-dialog-footer"><button className="kg-button" disabled={deleting} onClick={() => setDeleteTarget(null)}>保留知识</button><button className="kg-button kg-danger" disabled={deleting} onClick={() => void remove()}>{deleting ? "删除中…" : "确认删除"}</button></footer></Dialog>}
+    {help && <Dialog title="像整理文件夹一样，探索知识网" subtitle="标签导航与画布操作" onClose={() => setHelp(false)}><div className="kg-help-body">{[
+      ["01", "从左侧逐层展开", "知识域 → 分类 → 关键词。点击任意子标签，右侧只展示对应内容，并按固定间距排列；路径导航可返回上一层。"],
+      ["02", "滚轮缩放，拖动移动", "鼠标在空白画布或知识卡片上，直接滚动即可缩放。拖动空白平移画布，拖动卡片调整节点位置；标签栏与编辑栏独立滚动。"],
+      ["03", "整理不丢失内容", "手动拖动的位置会保存在当前浏览器。左下角「整理布局」恢复规则排列，「适应画布」调整视野，100% 按钮恢复原始比例。"],
+      ["04", "在网内新增与编辑", "点击新建、双击空白或右键新建，直接写内容即可。当前分类与关联会自动带入，不必再选手动分类。未保存的编辑在切换前会提醒。"],
+    ].map(([number, title, text]) => <div key={number}><span>{number}</span><section><h3>{title}</h3><p>{text}</p></section></div>)}<p className="kg-editor-note">共享关键词表示主题相似，并不代表事实引用；参考与依赖由你明确标注。只有已启用且与任务相关的知识会用于提示词构建。</p></div></Dialog>}
   </div>;
 }
