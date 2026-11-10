@@ -43,7 +43,7 @@
 
 ## 构建与测试
 
-在项目根目录运行 `node scripts/build-astra.mjs`，将仓库自己的 Vite 单文件构建发布到 Next.js 静态入口。不要直接编辑生成文件 `public/astra/index.html`。图谱渲染器 `@xyflow/react` 安装在宿主根目录；`astra/vite.config.js` 使用 `resolve.dedupe` 保证应用与渲染器共用仓库内的一份 React，避免嵌套项目出现重复 React Hook 错误。
+本项目直接用 `npm run build` 生成单文件 `dist/index.html`。`vite.config.js` 使用 `resolve.dedupe` 保证应用与图谱渲染器 `@xyflow/react` 共用一份 React，避免嵌套部署时出现重复 React Hook 错误。
 
-图谱单元测试：在 `astra/` 下运行 `./node_modules/.bin/tsx --test tests/knowledge-graph.test.ts`。
-浏览器交互测试：启动预览后，在根目录运行 `ASTRA_URL=http://localhost:3000 node tests/knowledge-ui.mjs`。
+图谱单元测试：`npm test`（包含 `tests/knowledge-graph.test.ts`）。
+浏览器交互测试：启动开发服务器并安装 `playwright` 后运行 `APP_URL=http://127.0.0.1:5173 node tests/knowledge-web.mjs`。

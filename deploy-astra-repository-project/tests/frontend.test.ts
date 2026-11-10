@@ -42,6 +42,43 @@ describe("frontend request routing", () => {
   });
 });
 
+describe("app, game and simulation routing", () => {
+  // Every one of these used to fall back to the photo-rename script example.
+  const builds = [
+    ["做一个贪吃蛇小游戏", "game"],
+    ["做一个番茄钟应用", "tool"],
+    ["做一个 Markdown 编辑器，支持暗色模式", "tool"],
+    ["用 three.js 做一个 3D 太阳系模拟", "visual"],
+    ["复刻一个 Spotify 播放器界面", "clone"],
+    ["做一个可以拖拽的看板应用", "tool"],
+    ["做一个物理仿真小球碰撞", "visual"],
+    ["Build a markdown editor with dark mode", "tool"],
+    ["Make a playable Tetris game", "game"],
+    ["Create a 3D solar system simulation", "visual"],
+    ["Clone the Airbnb homepage", "clone"],
+  ] as const;
+  for (const [text, kind] of builds) {
+    it(`routes ${text} as a ${kind} build`, () => {
+      assert.equal(isFrontendRequest(text), true);
+      assert.equal(frontendKind(text), kind);
+      assert.ok(pickCases("coding", text, 2).every(item => item.id !== "photo-rename"));
+    });
+  }
+  for (const text of ["写一篇游戏评测", "分析 Spotify 商业模式", "推荐几款好玩的游戏", "写一个计算器函数"]) {
+    it(`does not treat ${text} as an app build`, () => {
+      assert.equal(isFrontendRequest(text), false);
+    });
+  }
+  it("routes Arena prompts without a redesign kind or component false positives", () => {
+    assert.equal(frontendKind("做一个番茄钟应用，用 React 函数组件写", { target: "arena" }), "tool");
+    assert.equal(frontendKind("做一个番茄钟应用，用 React 函数组件写"), "component");
+    assert.equal(frontendKind("做一个关于猫的网站", { target: "arena" }), "site");
+    assert.equal(frontendKind("做个能记录每天喝水的小东西", { target: "arena" }), "tool");
+    assert.equal(frontendKind("重新设计一个音乐播放器", { target: "arena" }), "tool");
+    assert.equal(frontendKind("做一个仿佛置身太空的个人主页", { target: "arena" }), "site");
+  });
+});
+
 describe("adaptive design brief", () => {
   it("keeps unspecified product facts open for a one-line website request", () => {
     const text = "I want to make a beautiful website";

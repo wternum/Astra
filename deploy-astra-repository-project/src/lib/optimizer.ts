@@ -1,3 +1,7 @@
+import type { ArenaSpec } from "@/ai/arena";
+import type { ArenaRound } from "@/ai/arena-rounds";
+import type { ArenaScope } from "@/ai/targets";
+
 // PromptForge shared domain model and transparent, offline-capable prompt engine.
 // Local scores describe instruction completeness; they are not a prediction of model performance.
 
@@ -65,6 +69,14 @@ export interface OptimizeResult {
   model?: string;
   historyId?: number;
   createdAt?: string;
+  /** "arena" for Arena Code prompts; absent for the general five-section prompt. */
+  target?: "arena" | "general";
+  /** Arena only: the app spec later rounds build on. */
+  arenaSpec?: ArenaSpec;
+  /** Arena only: whether the first turn built the core loop or everything. */
+  arenaScope?: ArenaScope;
+  /** Arena only: the follow-up turns generated so far for this battle. */
+  arenaRounds?: ArenaRound[];
 }
 
 export interface Scenario {

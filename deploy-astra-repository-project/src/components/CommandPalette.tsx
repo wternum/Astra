@@ -28,8 +28,8 @@ export default function CommandPalette({ open, onClose, onNavigate, onUsePrompt,
     { id: "model", label: "连接免费 AI 模型", hint: "NO KEY", keywords: "model ai free 免费 模型 pollinations openrouter", icon: <PlugZap size={18} />, run: onOpenModel },
     { id: "focus", label: "聚焦输入框", hint: "FOCUS", keywords: "input write 输入 写作", icon: <Search size={18} />, run: () => { onNavigate("studio"); window.setTimeout(() => document.getElementById("goal")?.focus(), 100); } },
     { id: "generate", label: "生成优化提示词", hint: "⌘ ↵", keywords: "generate optimize 生成 优化", icon: <Sparkles size={18} />, run: () => { onNavigate("studio"); window.setTimeout(() => window.dispatchEvent(new CustomEvent("promptforge:generate")), 100); } },
-    { id: "writing", label: "试试：写一篇有观点的文章", hint: "STARTER", keywords: "writing 写作 文章", icon: <Wand2 size={18} />, run: () => onUsePrompt("写一篇面向独立开发者的文章：为什么小团队更应该重视产品文档。希望有真实工作场景举例。", "writing") },
-    { id: "coding", label: "试试：生成可运行的代码", hint: "STARTER", keywords: "code python 代码 编程", icon: <Wand2 size={18} />, run: () => onUsePrompt("用 Python 写一个读取 CSV、按月份汇总销售额并导出新 CSV 的脚本，处理空值和错误日期。", "coding") },
+    { id: "arena-game", label: "试试：Arena 小游戏", hint: "STARTER", keywords: "arena game 游戏 对战 打砖块", icon: <Wand2 size={18} />, run: () => onUsePrompt("做一个打砖块小游戏，要有道具和三个关卡", "coding") },
+    { id: "arena-tool", label: "试试：Arena 工具应用", hint: "STARTER", keywords: "arena tool markdown 编辑器 应用", icon: <Wand2 size={18} />, run: () => onUsePrompt("做一个 Markdown 编辑器，支持暗色模式和实时预览", "coding") },
     ...THEMES.map(item => ({ id: `theme-${item.id}`, label: `${theme === item.id ? "当前模式：" : "切换到"}${item.name}模式`, hint: "APPEARANCE", keywords: `theme appearance 主题 外观 模式 ${item.id} ${item.name} ${item.id === "dark" ? "dark night 夜间 暗黑 深色" : "light white 白天 浅色 纯白"}`, icon: item.id === "dark" ? <Moon size={18} /> : <Sun size={18} />, run: () => onTheme(item.id) })),
   ], [onNavigate, onUsePrompt, onOpenModel, onTheme, theme]);
   const filtered = actions.filter(action => `${action.label} ${action.keywords}`.toLowerCase().includes(query.toLowerCase()));

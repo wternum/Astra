@@ -27,5 +27,8 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src", "tests", "vite.config.ts"],
+  // Unused Next.js / Drizzle leftovers from the original repository. The Vite
+  // app never imports them and their packages are not installed.
+  "exclude": ["src/app/api", "src/app/layout.tsx", "src/db", "src/lib/model.ts", "src/lib/custom-endpoint.ts"]
 }

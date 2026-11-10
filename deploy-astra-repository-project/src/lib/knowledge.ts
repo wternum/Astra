@@ -1,4 +1,5 @@
 import { LIBRARY_IDS } from "./knowledge-library";
+import type { PromptTarget } from "@/ai/targets";
 
 /**
  * Knowledge base entries and relevance-based retrieval.
@@ -68,52 +69,87 @@ export function normalizeKnowledgeEntries(raw: unknown[]): KnowledgeEntry[] {
     .filter(entry => entry.id > 0 || entry.name);
 }
 
+/**
+ * High-frequency Chinese bigrams and English function words. Without this list
+ * 「做一个…」 matched every entry containing 「一个」, so starter notes were
+ * injected into nearly every request.
+ */
+const STOP_TOKENS = new Set([
+  "一个", "一下", "一些", "一种", "一份", "一篇", "一款", "做一", "做个", "写一", "写个", "这个", "那个", "这些", "那些",
+  "帮我", "给我", "我想", "我要", "想要", "需要", "可以", "能够", "什么", "怎么", "如何", "我们", "你们", "他们",
+  "进行", "以及", "或者", "还是", "就是", "不是", "没有", "已经", "因为", "所以", "但是", "如果", "然后", "自己",
+  "the", "and", "for", "with", "that", "this", "from", "into", "your", "you", "are", "can", "use", "make",
+  "build", "create", "want", "need", "please", "help", "an", "of", "to", "in", "on", "is", "it", "my", "me",
+]);
+
 function tokens(value: string) {
   const normalized = value.toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, " ");
   const output: string[] = [];
   for (const word of normalized.split(" ").filter(Boolean)) {
     if (/^[a-z0-9]+$/.test(word)) {
-      if (word.length >= 2) output.push(word);
+      if (word.length >= 2 && !STOP_TOKENS.has(word)) output.push(word);
     } else {
-      for (let i = 0; i < word.length - 1; i++) output.push(word.slice(i, i + 2));
+      for (let i = 0; i < word.length - 1; i++) {
+        const gram = word.slice(i, i + 2);
+        if (!STOP_TOKENS.has(gram)) output.push(gram);
+      }
     }
   }
   return output;
 }
 
-function scoreField(query: Set<string>, value: string, weight: number) {
+function scoreField(query: Set<string>, value: string, weight: number, matched: Set<string>) {
   let score = 0;
   const seen = new Set<string>();
   for (const token of tokens(value)) {
-    if (query.has(token) && !seen.has(token)) { score += weight; seen.add(token); }
+    if (query.has(token) && !seen.has(token)) { score += weight; seen.add(token); matched.add(token); }
   }
   return score;
 }
 
 const MAX_ENTRY_CHARS = 850;
 const MAX_TOTAL_CHARS = 2400;
+const MIN_SCORE = 2;
+
+export interface KnowledgeSelectOptions {
+  maxItems?: number;
+  /** Arena prompts skip starter notes: they teach prompt writing and are not facts about the app. */
+  target?: PromptTarget;
+}
+
+/** True when an entry may be injected into prompts built for this target. */
+export function isInjectableKnowledge(entry: Pick<KnowledgeEntry, "isBuiltin" | "enabled" | "source">, target: PromptTarget = "general") {
+  return !entry.isBuiltin && entry.enabled !== false && !(target === "arena" && entry.source === "seed");
+}
 
 /** Selects a few relevant, enabled, user-authored entries for prompt construction. */
 export function selectRelevantKnowledge(
   text: string,
   raw: unknown[],
-  maxItems = 3,
+  options: KnowledgeSelectOptions = {},
 ): KnowledgeSnippet[] {
-  const entries = normalizeKnowledgeEntries(raw).filter(entry => !entry.isBuiltin && entry.enabled !== false && entry.templateText);
+  const maxItems = options.maxItems ?? 3;
+  const entries = normalizeKnowledgeEntries(raw).filter(entry => isInjectableKnowledge(entry, options.target) && entry.templateText);
   const query = new Set(tokens(text));
   if (!entries.length || !query.size) return [];
   const lower = text.toLowerCase();
   const scored = entries.map(entry => {
-    let score = scoreField(query, entry.name, 4)
-      + scoreField(query, entry.description, 2)
-      + scoreField(query, entry.category, 1.5)
-      + scoreField(query, entry.templateText, 0.7)
-      + scoreField(query, (entry.tags || []).join(" "), 2.4);
+    const matched = new Set<string>();
+    let score = scoreField(query, entry.name, 4, matched)
+      + scoreField(query, entry.description, 2, matched)
+      + scoreField(query, entry.category, 1.5, matched)
+      + scoreField(query, entry.templateText, 0.7, matched)
+      + scoreField(query, (entry.tags || []).join(" "), 2.4, matched);
     if (entry.category === "通用") score += 0.8;
     const plainName = entry.name.toLowerCase();
-    if (plainName.length >= 2 && lower.includes(plainName)) score += 10;
-    return { entry, score };
-  }).filter(item => item.score >= 1)
+    const titleNamed = plainName.length >= 2 && lower.includes(plainName);
+    if (titleNamed) score += 10;
+    const tagNamed = (entry.tags || []).some(tag => tag.length >= 2 && lower.includes(tag.toLowerCase()));
+    // One shared word is not relevance: require two distinct matches unless the
+    // request names the entry's title or one of its tags.
+    const relevant = score >= MIN_SCORE && (titleNamed || tagNamed || matched.size >= 2);
+    return { entry, score, relevant };
+  }).filter(item => item.relevant)
     .sort((a, b) => b.score - a.score || (b.entry.createdAt || "").localeCompare(a.entry.createdAt || ""));
 
   const output: KnowledgeSnippet[] = [];

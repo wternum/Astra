@@ -11,6 +11,9 @@ import type { FrontendBrief } from "@/ai/frontend";
 import { isDesignOnlyRequest } from "@/ai/frontend";
 import { formatKnowledgeBlock, type KnowledgeSnippet } from "@/lib/knowledge";
 
+/** Phrases that make the executing model stop and wait for the user instead of delivering. */
+export const BLOCKING_PATTERN = /请先回答|请先提供|请补充.{0,12}(?:后|再)|收到上述信息后|等待(?:你|您|用户)提供|回答上述问题后|确认后再|please (?:first |start by )?(?:ask|provide|answer).*before|wait (?:for|until) (?:the user|more information)/i;
+
 export interface PromptCheck {
   id: string;
   label: string;
@@ -37,7 +40,7 @@ function bigrams(value: string) {
 }
 
 /** Character-bigram similarity works for Chinese and mixed Chinese/English text. */
-function similarity(a: string, b: string) {
+export function similarity(a: string, b: string) {
   const left = bigrams(a);
   const right = bigrams(b);
   if (!left.size || !right.size) return normalize(a) === normalize(b) ? 1 : 0;
@@ -46,7 +49,7 @@ function similarity(a: string, b: string) {
   return (2 * shared) / (left.size + right.size);
 }
 
-function containsApproximately(haystack: string, needle: string) {
+export function containsApproximately(haystack: string, needle: string) {
   const source = normalize(haystack);
   const target = normalize(needle);
   if (!target) return true;
@@ -85,7 +88,7 @@ export function evaluatePrompt(optimized: string, original: string, analysis: Ne
   const hasCriteria = /质量检查|验收标准|质量标准|交付前.*(?:核对|检查)|成功标准|quality checks|acceptance criteria|before delivery.*(?:check|verify)/i.test(instructions);
   add("criteria", "成功标准可检查", hasCriteria, hasCriteria ? "包含交付前的质量检查" : "没有告诉执行模型怎样判断结果是否合格");
 
-  const blocking = /请先回答|请先提供|请补充.{0,12}(?:后|再)|收到上述信息后|等待(?:你|您|用户)提供|回答上述问题后|确认后再|please (?:first |start by )?(?:ask|provide|answer).*before|wait (?:for|until) (?:the user|more information)/i.test(instructions);
+  const blocking = BLOCKING_PATTERN.test(instructions);
   add("executable", "无需等待即可执行", !blocking, blocking ? "仍要求执行模型先提问或等待资料" : "缺失信息采用默认假设，能够直接开始执行");
 
   const labelsAssumptions = analysis.assumptions.length === 0 || /默认假设|合理假设|假设[：:]|如果未说明|default assumptions?|provisional|\bassumptions?\b|if not specified/i.test(instructions);

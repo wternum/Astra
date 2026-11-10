@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { normalizeAnalysis, optimizeWithAi } from "../src/ai/engine";
-import { selectRelevantKnowledge } from "../src/lib/knowledge";
+import { isInjectableKnowledge, selectRelevantKnowledge } from "../src/lib/knowledge";
+import { SEED_KNOWLEDGE } from "../src/lib/knowledge-seed";
 
 const entries = [
   {
@@ -26,6 +27,21 @@ describe("knowledge retrieval", () => {
   });
   it("does not inject unrelated knowledge", () => {
     assert.equal(selectRelevantKnowledge("用 Python 写一个批量重命名脚本", entries).length, 0);
+  });
+  it("does not let a shared filler bigram such as 「一个」 pull in starter notes", () => {
+    // Before the stop list this matched 动效规格要可执行 and 按组件迭代 through 「一个」 alone.
+    assert.deepEqual(selectRelevantKnowledge("做一个贪吃蛇小游戏", SEED_KNOWLEDGE), []);
+    assert.deepEqual(selectRelevantKnowledge("做一个番茄钟应用", SEED_KNOWLEDGE), []);
+  });
+  it("skips starter notes for Arena prompts but keeps the user's own knowledge", () => {
+    for (const text of ["做一个带动画效果的产品落地页，响应式布局", "设计一个有视觉冲击力的个人作品集网站，要有滚动动效", "做一个给运营看的数据分析后台，支持日期筛选与空状态"]) {
+      assert.deepEqual(selectRelevantKnowledge(text, SEED_KNOWLEDGE, { target: "arena" }), [], text);
+    }
+    assert.deepEqual(selectRelevantKnowledge("帮我写一个品牌文案，语气规范", entries, { target: "arena" }).map(item => item.id), [1]);
+    const seed = SEED_KNOWLEDGE[0];
+    assert.equal(isInjectableKnowledge(seed, "arena"), false);
+    assert.equal(isInjectableKnowledge(seed, "general"), true);
+    assert.equal(isInjectableKnowledge({ ...seed, source: "user" }, "arena"), true);
   });
 });
 
