@@ -7,6 +7,7 @@
  * The actual direction is chosen for each request, never copied from a gallery.
  */
 import type { NeedAnalysis } from "@/ai/engine";
+import type { PromptTarget } from "@/ai/targets";
 
 export type FrontendKind =
   | "site"
@@ -16,7 +17,11 @@ export type FrontendKind =
   | "editorial"
   | "product-ui"
   | "component"
-  | "redesign";
+  | "redesign"
+  | "game"
+  | "tool"
+  | "clone"
+  | "visual";
 
 export interface FrontendBrief {
   kind: FrontendKind;
@@ -64,6 +69,10 @@ const KIND_LABELS: Record<FrontendKind, string> = {
   "product-ui": "产品界面 / 控制台",
   component: "页面组件",
   redesign: "现有网站改版",
+  game: "网页游戏",
+  tool: "工具 / 应用",
+  clone: "产品界面复刻",
+  visual: "可视化 / 3D 模拟",
 };
 
 const ENGLISH_KIND_LABELS: Record<FrontendKind, string> = {
@@ -75,7 +84,15 @@ const ENGLISH_KIND_LABELS: Record<FrontendKind, string> = {
   "product-ui": "product interface / dashboard",
   component: "web component",
   redesign: "existing website redesign",
+  game: "browser game",
+  tool: "web app / tool",
+  clone: "product UI clone",
+  visual: "visualization / 3D simulation",
 };
+
+export function frontendKindLabel(kind: FrontendKind, english = false) {
+  return english ? ENGLISH_KIND_LABELS[kind] : KIND_LABELS[kind];
+}
 
 export function isEnglishRequest(text: string) {
   return !/[\u3400-\u9fff]/.test(text) && /[a-z]{3}/i.test(text);
@@ -90,29 +107,61 @@ function match(text: string, expression: RegExp) {
   return expression.exec(text)?.[0] || "";
 }
 
+/** Things people ask a coding model to build that are not "pages": games, tools, simulations. */
+const APP_NOUN = "游戏|小游戏|应用|工具|编辑器|计时器|番茄钟|待办|看板|计算器|转换器|记账|日历|笔记|白板|画板|播放器|模拟器?|仿真|可视化|3D|三维|three\\.?js|webgl|canvas|粒子|贪吃蛇|俄罗斯方块|扫雷|井字棋|五子棋|2048|打砖块|\\bapp\\b|\\bgame\\b|playable|tetris|snake|editor|timer|tracker|calculator|converter|planner|kanban|todo|whiteboard|drawing app|music player|simulator|simulation|visuali[sz](?:er|ation)|particles?";
+const APP_BUILD = new RegExp(`(?:做|建|搭|开发|实现|构建|制作|创建|写|复刻|克隆|仿(?![真佛])|生成|make|build|create|develop|implement|code|write|clone|recreate)[^。！？!?\\n]{0,20}?(?:${APP_NOUN})`, "i");
+const ABOUT_APPS = /(?:写|撰写)(?:一篇|篇|一段|一份)|评测|测评|攻略|(?:推荐|介绍)(?:几|一些|一下|一款|几款)|\b(?:review|article|essay|recommend)\b/i;
+const CODE_ONLY = /(?:函数|脚本|算法|命令行|\bCLI\b|\bfunction\b|\bscript\b|\balgorithm\b)/i;
+const HAS_UI = /(?:界面|页面|网页|\bUI\b|应用|\bapp\b|游戏|\bgame\b)/i;
+
 export function isFrontendRequest(text: string, analysis?: Pick<NeedAnalysis, "category" | "domain">) {
   const input = text.trim();
   if (!input) return false;
   const subject = /网页|网站|网店|商城|落地页|官网|首页|主页|页面|作品集|仪表盘|控制台|后台|数据看板|界面|前端|组件|小程序|web\s?(?:site|page|app)|landing page|product page|checkout page|app screen|web interface|online shop|online store|e-?commerce|portfolio|dashboard|storefront|homepage|UI\b/i.test(input);
-  const build = /(?:做|建|搭|设计|开发|实现|构建|制作|创建|重做|改版|优化|生成|想要|我想|需要|给我|帮我|写|make|build|design|create|develop|implement|redesign|refine|want|need|give me)/i.test(input);
+  const build = /(?:做|建|搭|设计|开发|实现|构建|制作|创建|重做|改版|优化|生成|想要|我想|需要|给我|帮我|写|复刻|克隆|make|build|design|create|develop|implement|redesign|refine|want|need|give me|clone|recreate)/i.test(input);
   const writingAboutWeb = /(?:写|撰写|总结|分析|讲解|介绍|翻译)(?:一篇|篇|一段|一下)?(?:关于|有关|讨论|解释).{0,35}(?:网页|网站|前端|web\s?(?:site|design))/.test(input)
     || /\b(?:write|explain|summarize|analyze)\s+(?:an?\s+)?(?:article|essay|report|guide|post)\s+(?:about|on)\s+(?:web|website)/i.test(input);
   const analysisOfWeb = /(?:帮我|请|我想|需要)?(?:分析|解释|研究|比较|评估|总结).{0,18}(?:网站|网页|web\s?site)/i.test(input)
     || /\b(?:analyze|explain|compare|evaluate)\s+(?:a\s+|the\s+)?(?:website|web\s?site)/i.test(input);
   if (writingAboutWeb || analysisOfWeb) return false;
-  return subject && (build || /前端|网页设计|web design|website build/i.test(analysis?.domain || ""));
+  // "做一个贪吃蛇小游戏" / "Build a markdown editor" are app builds even without the word 网页.
+  const appBuild = APP_BUILD.test(input) && !ABOUT_APPS.test(input) && !(CODE_ONLY.test(input) && !HAS_UI.test(input));
+  return appBuild || subject && (build || /前端|网页设计|web design|website build/i.test(analysis?.domain || ""));
 }
 
-export function frontendKind(text: string): FrontendKind {
-  if (/组件|按钮|一个区块|一段动效|单独的导航|\bcomponent\b|\bbutton\b|single section/i.test(text)) return "component";
-  if (/改版|重新设计|重做|改造现有|优化现有|redesign|existing (?:website|site)/i.test(text)) return "redesign";
-  if (/仪表盘|控制台|后台|工作台|数据看板|管理界面|dashboard|admin panel|console|product UI/i.test(text)) return "product-ui";
-  if (/商城|网店|电商|商品页|购物车|结账|商品列表|e-?commerce|online shop|online store|storefront|product catalog/i.test(text)) return "storefront";
-  if (/作品集|摄影师|设计师网站|portfolio|photographer|artist website/i.test(text)) return "portfolio";
-  if (/博客|杂志|文章网站|出版物|刊物|blog|magazine|editorial site|publication/i.test(text)) return "editorial";
-  if (/落地页|官网|宣传页|活动页|发布页|landing page|campaign page|launch page|marketing site/i.test(text)) return "landing";
-  return "site";
+const KIND_RULES = {
+  component: /组件|按钮|一个区块|一段动效|单独的导航|\bcomponent\b|\bbutton\b|single section/i,
+  redesign: /改版|重新设计|重做|改造现有|优化现有|redesign|existing (?:website|site)/i,
+  clone: /复刻|克隆|高仿|仿(?![真佛])|\bclone\b|\brecreate\b|\breplica\b/i,
+  game: /游戏|贪吃蛇|俄罗斯方块|消消乐|扫雷|井字棋|五子棋|象棋|打砖块|飞机大战|跑酷|2048|数独|连连看|弹球|闯关|\bgame\b|playable|tetris|\bsnake\b|minesweeper|sudoku|tic[- ]tac[- ]toe|breakout|\bpong\b|platformer|arcade|\bchess\b|shooter/i,
+  "product-ui": /仪表盘|控制台|后台|工作台|数据看板|数据大屏|管理界面|dashboard|admin panel|console|product UI/i,
+  visual: /3D|三维|three\.?js|webgl|canvas|粒子|物理|仿真|模拟|太阳系|星系|分形|生成艺术|着色器|可视化|\bshader\b|simulation|simulator|visuali[sz](?:er|ation)|particles?|physics|solar system|generative art|fractal/i,
+  storefront: /商城|网店|电商|商品页|购物车|结账|商品列表|e-?commerce|online shop|online store|storefront|product catalog/i,
+  portfolio: /作品集|摄影师|设计师网站|portfolio|photographer|artist website/i,
+  editorial: /博客|杂志|文章网站|出版物|刊物|blog|magazine|editorial site|publication/i,
+  landing: /落地页|官网|宣传页|活动页|发布页|landing page|campaign page|launch page|marketing site/i,
+  tool: /编辑器|计时器|番茄钟|待办|任务清单|看板|计算器|换算|转换器|记账|账本|日历|日程|笔记|备忘录|白板|画板|绘图|播放器|天气|聊天(?:界面|应用)|生成器|工具|应用|小程序|\bapp\b|editor|timer|pomodoro|tracker|calculator|converter|planner|calendar|\bnotes?\b|whiteboard|drawing|player|chat (?:app|ui)|generator|\btool\b|habit|kanban|todo/i,
+} as const satisfies Partial<Record<FrontendKind, RegExp>>;
+
+const GENERAL_ORDER = ["component", "redesign", "clone", "game", "product-ui", "visual", "storefront", "portfolio", "editorial", "landing", "tool"] as const;
+// Arena has no existing site to redesign, and 「组件」 there is usually an implementation detail.
+const ARENA_ORDER = ["clone", "game", "product-ui", "visual", "storefront", "portfolio", "editorial", "landing", "tool", "component"] as const;
+const WEB_WORDS = /网站|网页|页面|主页|首页|website|web\s?page|homepage|\bsite\b/i;
+
+/** The kind named by an explicit rule, or null when only the fallback would apply. */
+export function matchFrontendKind(text: string, options: { target?: PromptTarget } = {}): FrontendKind | null {
+  const order = options.target === "arena" ? ARENA_ORDER : GENERAL_ORDER;
+  return order.find(id => KIND_RULES[id].test(text)) || null;
 }
+
+export function frontendKind(text: string, options: { target?: PromptTarget } = {}): FrontendKind {
+  const kind = matchFrontendKind(text, options);
+  if (kind) return kind;
+  // Every Arena prompt is a build; without page words it is most likely an app.
+  return options.target === "arena" && !WEB_WORDS.test(text) ? "tool" : "site";
+}
+
+export const FRONTEND_KINDS = ["site", "landing", "portfolio", "storefront", "editorial", "product-ui", "component", "redesign", "game", "tool", "clone", "visual"] as const satisfies readonly FrontendKind[];
 
 const BASE_GUIDANCE: Record<FrontendKind, Pick<FrontendBrief, "composition" | "visualAnchor" | "motion" | "interactions">> = {
   site: {
@@ -163,6 +212,30 @@ const BASE_GUIDANCE: Record<FrontendKind, Pick<FrontendBrief, "composition" | "v
     motion: "尊重原有交互，只有能提升理解和反馈的动效才保留或新增。",
     interactions: "原有主要路径不能失效；新增状态应按现有项目技术栈实现。",
   },
+  game: {
+    composition: "以可玩的游戏区为首屏主体：棋盘或画布居中，得分、状态和操作提示围绕它组织，不做营销式首屏。",
+    visualAnchor: "游戏画面本身是视觉主角：统一的美术风格（像素、霓虹、手绘等），角色、道具与反馈效果用 CSS / SVG / Canvas 绘制。",
+    motion: "为得分、碰撞、升级和结束设计即时反馈（150–400ms），保持帧率稳定，并提供 reduced-motion 下的简化反馈。",
+    interactions: "键盘与触屏都能操作；开始、暂停、结束与重新开始状态完整，最高分本地保存。",
+  },
+  tool: {
+    composition: "以核心工作区为主：主要操作、内容区与设置在第一屏可见，信息密度适中，不加营销首屏。",
+    visualAnchor: "真实的工作内容（文档、任务、数据）是视觉主角，用清晰的层级和状态色而不是装饰图。",
+    motion: "只为状态变化提供 120–220ms 的反馈：添加、完成、拖拽、保存成功等。",
+    interactions: "核心流程完整可用：增删改、快捷键、本地持久化、空状态与删除确认或撤销。",
+  },
+  clone: {
+    composition: "还原参考产品的信息架构、布局比例和关键交互路径；品牌名、文案与素材全部自拟。",
+    visualAnchor: "用自拟品牌的内容与 CSS / SVG 素材重现视觉层级，不使用原产品的 Logo、商标或受版权保护的图片。",
+    motion: "复现最能体现原产品体验的 1–2 个交互动效，例如播放进度、切换过渡。",
+    interactions: "关键路径可操作：导航切换、列表或卡片交互、播放或详情弹层都要有真实状态。",
+  },
+  visual: {
+    composition: "全屏画布或主视窗是主体，参数、播放/暂停、重置等控制精简地叠加或放在侧边。",
+    visualAnchor: "模拟或可视化本身是主角：明确的配色、光照或层次，以及可读的标注。",
+    motion: "动画按真实规则驱动（时间步长、缓动），可暂停、调速，并在 reduced-motion 下给出静态降级。",
+    interactions: "拖拽旋转或缩放、参数滑块、点击查看详情即时响应，窗口尺寸变化时自适应。",
+  },
 };
 
 const ENGLISH_GUIDANCE: Record<FrontendKind, Pick<FrontendBrief, "composition" | "visualAnchor" | "motion" | "interactions">> = {
@@ -174,9 +247,13 @@ const ENGLISH_GUIDANCE: Record<FrontendKind, Pick<FrontendBrief, "composition" |
   "product-ui": { composition: "Organize by the user's primary task and data relationships; do not add a marketing hero to a dashboard.", visualAnchor: "Real work, records or charts are the visual focus instead of decorative photos.", motion: "Use motion only to explain state changes; provide reduced-motion support.", interactions: "Filters, save actions, loading, empty and error states all work and are recoverable." },
   component: { composition: "Build only the requested component and its immediate context, not an invented whole site.", visualAnchor: "The content and action are the anchor; imagery is optional.", motion: "Animate only meaningful state transitions with keyboard and touch feedback.", interactions: "Click, keyboard, disabled, loading and error behavior are testable." },
   redesign: { composition: "Preserve the existing product's information architecture and improve only the reported problems; do not invent a new brand.", visualAnchor: "Reuse actual product assets; do not claim to have seen the original site unless it was provided and accessible.", motion: "Keep existing interaction patterns unless changes make the task clearer.", interactions: "Do not break the main journey while improving navigation, focus and feedback." },
+  game: { composition: "The playable board or canvas is the first view; score, status and controls frame it. No marketing hero.", visualAnchor: "The game itself is the visual: one coherent art style (pixel, neon, hand-drawn…) drawn with CSS, SVG or Canvas.", motion: "Give instant 150–400ms feedback for scoring, collisions, level-ups and game over; keep the frame rate steady and simplify under reduced motion.", interactions: "Keyboard and touch both work; start, pause, game-over and restart states are complete, and the best score persists locally." },
+  tool: { composition: "The working area comes first: main actions, content and settings are visible in the first view with no marketing hero.", visualAnchor: "Real work content (documents, tasks, data) carries the visual, using hierarchy and status colors instead of decoration.", motion: "Use 120–220ms transitions only for state changes such as add, complete, drag and saved.", interactions: "The core flow works end to end: create/edit/delete, shortcuts, local persistence, empty states and confirm or undo." },
+  clone: { composition: "Recreate the reference product's information architecture, proportions and key interaction paths with an invented brand, copy and assets.", visualAnchor: "Rebuild the visual hierarchy with original content and CSS/SVG art; never use the original logo, trademarks or copyrighted images.", motion: "Reproduce the one or two interactions that define the original experience, such as playback progress or view transitions.", interactions: "Key paths work: navigation, list or card interactions, playback or detail overlays all have real state." },
+  visual: { composition: "A full-bleed canvas or main viewport is the subject; parameter, play/pause and reset controls stay compact as an overlay or side panel.", visualAnchor: "The simulation or visualization is the hero, with a deliberate palette, lighting or depth and readable labels.", motion: "Drive animation from real rules (time step, easing); allow pause and speed control, with a static fallback under reduced motion.", interactions: "Drag to rotate or zoom, parameter sliders and click-for-detail respond immediately and adapt to window resizes." },
 };
 
-function signalsFromText(text: string) {
+export function signalsFromText(text: string) {
   const signals: string[] = [];
   const english = isEnglishRequest(text);
   const purpose = match(text, /作品集|摄影|SaaS|餐厅|咖啡|烘焙|书店|服装|音乐|教育|医疗|房产|旅行|金融|产品发布|社群|portfolio|photography|restaurant|cafe|bakery|bookstore|fashion|music|education|travel|fintech/i);

@@ -103,7 +103,12 @@ npm run preview -- --host 0.0.0.0 --port 4173
     ├── semantic.css         # 单列输入、原位生成进度与结果展示样式
     ├── ai/
     │   ├── client.ts        # AI 客户端：免费 AI / 自定义接口、45 秒排队、代理回退
-    │   ├── engine.ts        # 提示词工程：AI 需求判定 → 结构生成 → 自动返修
+    │   ├── engine.ts        # 提示词工程：通用（判定 → 构建 → 返修）与 Arena（一次规格调用）
+    │   ├── targets.ts       # 目标平台与 Arena 默认决策（技术栈、内容政策、追问）
+    │   ├── arena.ts         # Arena 规格：模型消息、清洗、类型默认值、七段渲染、追问
+    │   ├── arena-cases.ts   # Arena 规格示例（7 类 × 中英）
+    │   ├── arena-quality.ts # Arena 确定性校验与代码补齐
+    │   ├── json.ts          # 小模型 JSON 容错解析
     │   ├── blueprint.ts     # 按领域生成五段提示词结构蓝图与官方参考链接
     │   ├── quality.ts       # 8 项确定性工程校验与事实边界补齐
     │   └── cases.ts         # 案例提示词库（按领域选取作为 few-shot 示范）
@@ -149,5 +154,5 @@ npm run preview -- --host 0.0.0.0 --port 4173
 - 首次访问会写入 `src/lib/knowledge-seed.ts` 中的 12 条示例知识（可编辑/删除），保证知识网与卡片立即有内容。
 - 知识库 UI（`src/components/KnowledgePanel.tsx` + `src/knowledge.css`）包含：分类导航、交互式知识关系网络（`src/components/KnowledgeNetwork.tsx`）、以及每张卡片的「效果预览 / 构建代码」双视图与五色配色卡（`src/lib/knowledge-palette.ts`）。
 - 默认显示「我的知识」；用户可新建、编辑、停用、删除、搜索条目，「内置示例」放在独立标签，不会挤占用户知识。
-- 用户创建且启用的条目会按当前输入自动匹配，最多注入 3 条、约 2400 字；AI 构建器将其作为独立 `<knowledge_base>` 资料块使用，质量检查会确认引用，缺失时由代码确定性补齐。内置示例和停用条目不参与构建。
-- 完整验证：`./node_modules/.bin/tsx --test tests/knowledge.test.ts`、`node tests/workspace-knowledge.mjs` 与 `node tests/knowledge-web.mjs`。
+- 启用的条目会按当前输入自动匹配（至少两个不同关键词命中，或标题 / 标签被点名），最多注入 3 条、约 2400 字。通用模式作为独立 `<knowledge_base>` 资料块使用，质量检查会确认引用，缺失时由代码补齐；Arena 模式写成「参考资料」段，且不使用初始示例知识。内置示例和停用条目不参与构建；改写过的示例条目会转为用户知识，不会被后续示例升级覆盖。
+- 单元测试：`npm test`（含 Arena、知识库、路由与预览后端）；类型检查：`npm run typecheck`。浏览器脚本 `tests/*.mjs` 需要先启动开发服务器并另行安装 `playwright`。

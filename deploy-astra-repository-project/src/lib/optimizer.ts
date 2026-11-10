@@ -65,6 +65,10 @@ export interface OptimizeResult {
   model?: string;
   historyId?: number;
   createdAt?: string;
+  /** "arena" for Arena Code prompts; absent for the general five-section prompt. */
+  target?: "arena" | "general";
+  /** Arena only: copyable prompts for later turns of the battle. */
+  followUps?: string[];
 }
 
 export interface Scenario {

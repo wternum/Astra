@@ -1,14 +1,17 @@
 /**
  * ASTRA prompt-engineering engine.
  *
- * Stage 1 — Need analysis: the AI reads the user's one-liner and returns a structured
- *           judgement (domain, real goal, audience, deliverable, hidden needs, constraints,
- *           clarifying questions, build strategy).
- * Stage 2 — Prompt construction: the AI rewrites the request into a natural-language prompt,
- *           grounded in the analysis and calibrated with few-shot cases from the same domain.
+ * General target (five-section prompt for any chat model):
+ *   Stage 1 — Need analysis: the AI reads the user's one-liner and returns a structured
+ *             judgement (domain, real goal, audience, deliverable, hidden needs, constraints,
+ *             clarifying questions, build strategy).
+ *   Stage 2 — Prompt construction: the AI rewrites the request into the five-section prompt,
+ *             grounded in the analysis and calibrated with few-shot cases from the same domain.
+ *   Then a deterministic check, at most one repair call and code-enforced contracts.
+ *   That is 2–3 model calls; on the free tier each waits for the 1-reply-per-45-s gate.
  *
- * On the free tier (1 reply / 45 s) both stages run inside ONE call: the model must finish
- * the analysis object first and then build the prompt from it.
+ * Arena target (Arena Code battles, see `@/ai/arena`): one model call writes an app spec,
+ * code renders and checks the prompt. Revisions are one call; offline needs none.
  */
 import { chat, type AiConfig } from "@/ai/client";
 import { pickCases, type PromptCase } from "@/ai/cases";
@@ -17,6 +20,14 @@ import { blueprintContext, createBlueprint } from "@/ai/blueprint";
 import { enforceFrontendContract, enforceGrounding, enforceKnowledge, evaluatePrompt, type PromptQuality } from "@/ai/quality";
 import { buildFrontendBrief, FRONTEND_BUILDER_RULES, FRONTEND_BUILDER_RULES_EN, isDesignOnlyRequest, isEnglishRequest, isFrontendRequest, type FrontendBrief } from "@/ai/frontend";
 import { knowledgeForCompiler, type KnowledgeSnippet } from "@/lib/knowledge";
+import { extractStringField, parseJsonLoose, str, strList } from "@/ai/json";
+import { arenaOfflineSpec, arenaSpecMessages, buildArenaFollowUps, DEFAULT_ARENA_OPTIONS, normalizeArenaSpec, type ArenaSpec } from "@/ai/arena";
+import { finalizeArenaSpec } from "@/ai/arena-quality";
+import { pickArenaCase } from "@/ai/arena-cases";
+import { frontendKindLabel } from "@/ai/frontend";
+import type { PromptTarget } from "@/ai/targets";
+
+export { parseJsonLoose } from "@/ai/json";
 
 export interface ClarifyingQuestion {
   q: string;
@@ -51,6 +62,10 @@ export interface NeedAnalysis {
   frontend?: FrontendBrief | null;
   knowledge?: KnowledgeSnippet[];
   model?: string;
+  /** Which platform the prompt is for; absent means "general". */
+  target?: PromptTarget;
+  /** Arena target only: the app spec the prompt is rendered from. */
+  arena?: ArenaSpec | null;
 }
 
 export interface AiOptimizeOutput {
@@ -63,6 +78,8 @@ export interface AiOptimizeOutput {
   model: string;
   cases: { id: string; title: string }[];
   knowledgeUsed: KnowledgeSnippet[];
+  /** Arena target only: copyable prompts for later turns of the battle. */
+  followUps?: string[];
 }
 
 const CATEGORY_IDS = LAYERS.map(layer => layer.id);
@@ -223,59 +240,6 @@ function repairMessages(text: string, analysis: NeedAnalysis, optimized: string,
 // ---------------------------------------------------------------------------
 // Parsing & normalisation
 // ---------------------------------------------------------------------------
-/** Escapes raw control characters that small models often leave inside JSON strings. */
-function repairJson(value: string) {
-  let out = "";
-  let inString = false;
-  let escaped = false;
-  for (const ch of value) {
-    if (inString) {
-      if (escaped) { out += ch; escaped = false; continue; }
-      if (ch === "\\") { out += ch; escaped = true; continue; }
-      if (ch === "\"") { inString = false; out += ch; continue; }
-      if (ch === "\n") { out += "\\n"; continue; }
-      if (ch === "\r") { continue; }
-      if (ch === "\t") { out += "\\t"; continue; }
-      out += ch;
-    } else {
-      if (ch === "\"") inString = true;
-      out += ch;
-    }
-  }
-  return out.replace(/,\s*([}\]])/g, "$1");
-}
-
-export function parseJsonLoose(raw: string): Record<string, unknown> | null {
-  const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim();
-  const tryParse = (value: string) => { try { const parsed = JSON.parse(value); return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null; } catch { return null; } };
-  const candidates = [cleaned];
-  const start = cleaned.indexOf("{");
-  const end = cleaned.lastIndexOf("}");
-  if (start !== -1 && end > start) candidates.push(cleaned.slice(start, end + 1));
-  for (const candidate of candidates) {
-    const parsed = tryParse(candidate) || tryParse(repairJson(candidate)) || tryParse(repairJson(candidate.replace(/[\u201c\u201d]/g, "\"")));
-    if (parsed) return parsed;
-  }
-  return null;
-}
-
-/** Recovers one JSON string value, tolerating raw newlines and a truncated tail. */
-function extractStringField(raw: string, field: string) {
-  const match = new RegExp(`["']${field}(?:Prompt|_prompt)?["']\\s*:\\s*["']`, "i").exec(raw);
-  if (!match) return "";
-  let index = match.index + match[0].length;
-  let value = "";
-  let escaped = false;
-  for (; index < raw.length; index++) {
-    const ch = raw[index];
-    if (escaped) { value += ch === "n" ? "\n" : ch === "r" ? "" : ch === "t" ? "\t" : ch; escaped = false; continue; }
-    if (ch === "\\") { escaped = true; continue; }
-    if (ch === '"' || ch === "'") break;
-    value += ch;
-  }
-  return value.trim();
-}
-
 /** Finds the generated prompt even when the model nests or renames the field. */
 function extractOptimized(parsed: Record<string, unknown> | null, raw: string): string {
   const keys = ["optimized", "optimizedPrompt", "optimized_prompt", "prompt", "final_prompt", "finalPrompt"];
@@ -295,12 +259,8 @@ function extractOptimized(parsed: Record<string, unknown> | null, raw: string): 
   return "";
 }
 
-const str = (value: unknown, fallback = "") => typeof value === "string" && value.trim() ? value.trim() : fallback;
-const strList = (value: unknown, max = 6) => Array.isArray(value)
-  ? value.map(item => typeof item === "string" ? item.trim() : "").filter(Boolean).slice(0, max)
-  : [];
-
-export function localAnalysis(text: string, forced?: LayerId | null): NeedAnalysis {
+export function localAnalysis(text: string, forced?: LayerId | null, target: PromptTarget = "general"): NeedAnalysis {
+  if (target === "arena") return arenaToAnalysis(arenaOfflineSpec(text), text, { source: "local" });
   const u = understand(text, forced || null);
   const frontend = !forced && isFrontendRequest(text, { category: u.layer.id, domain: u.layer.label });
   const layer = frontend && u.layer.id === "general" ? LAYERS.find(item => item.id === "coding") || u.layer : u.layer;
@@ -403,7 +363,12 @@ export function normalizeAnalysis(raw: Record<string, unknown> | null, text: str
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
-export async function analyzeNeed(text: string, config: AiConfig, options: { forced?: LayerId | null; signal?: AbortSignal } = {}): Promise<NeedAnalysis> {
+export async function analyzeNeed(
+  text: string,
+  config: AiConfig,
+  options: { forced?: LayerId | null; signal?: AbortSignal; target?: PromptTarget; knowledge?: KnowledgeSnippet[] } = {},
+): Promise<NeedAnalysis> {
+  if (options.target === "arena") return analyzeArena(text, config, { knowledge: options.knowledge, signal: options.signal });
   const response = await chat(config, analysisMessages(text, options.forced), { label: "AI 正在判定你的需求", temperature: 0.2, maxTokens: 5000, reasoningEffort: "low", signal: options.signal });
   const parsed = parseJsonLoose(response.text);
   if (!parsed) {
@@ -416,8 +381,9 @@ export async function analyzeNeed(text: string, config: AiConfig, options: { for
 export async function optimizeWithAi(
   text: string,
   config: AiConfig,
-  options: { analysis?: NeedAnalysis | null; forced?: LayerId | null; feedback?: string; previous?: string; knowledge?: KnowledgeSnippet[]; signal?: AbortSignal } = {},
+  options: { analysis?: NeedAnalysis | null; forced?: LayerId | null; feedback?: string; previous?: string; knowledge?: KnowledgeSnippet[]; signal?: AbortSignal; target?: PromptTarget } = {},
 ): Promise<AiOptimizeOutput> {
+  if (options.target === "arena") return optimizeForArena(text, config, options);
   const feedback = options.feedback?.trim() || "";
   const previous = options.previous?.trim() || "";
   const usable = options.analysis && options.analysis.source === "ai" && options.analysis.text === text
@@ -488,6 +454,146 @@ export async function optimizeWithAi(
     analysis, optimized, model, quality, repairAttempts, changes, rationale,
     cases: cases.map(item => ({ id: item.id, title: item.title })),
     knowledgeUsed: analysis.knowledge || [],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Arena target
+// ---------------------------------------------------------------------------
+/** Wraps an Arena spec in the NeedAnalysis shape the UI, history and backend already use. */
+export function arenaToAnalysis(
+  spec: ArenaSpec,
+  text: string,
+  extra: { source?: "ai" | "local"; model?: string; knowledge?: KnowledgeSnippet[] } = {},
+): NeedAnalysis {
+  const en = spec.language === "en";
+  return {
+    source: extra.source || (spec.origin === "offline" ? "local" : "ai"),
+    role: en ? "senior front-end engineer and product designer" : "资深前端工程师兼产品设计师",
+    knownFacts: [text],
+    successCriteria: spec.acceptance.slice(0, 4),
+    complexity: "multi-step",
+    text,
+    category: "coding",
+    categoryLabel: categoryLabel("coding"),
+    domain: `Arena · ${frontendKindLabel(spec.kind, en)}`,
+    summary: spec.summary,
+    goal: spec.coreLoop,
+    audience: en ? "Arena voters comparing two live previews" : "对比两个实时预览的 Arena 投票者",
+    deliverable: en ? "a web app that runs in the Arena preview" : "能在 Arena 预览中直接运行的 Web 应用",
+    tone: "",
+    format: en ? "seven-section Arena prompt" : "七段式 Arena 提示词",
+    constraints: spec.constraints,
+    hiddenNeeds: [],
+    assumptions: [],
+    questions: [],
+    strategy: "",
+    inferred: [],
+    confidence: spec.origin === "ai" ? 85 : 70,
+    alternatives: [],
+    frontend: null,
+    knowledge: extra.knowledge,
+    model: extra.model,
+    target: "arena",
+    arena: spec,
+  };
+}
+
+async function requestArenaSpec(
+  text: string,
+  config: AiConfig,
+  options: { knowledge?: KnowledgeSnippet[]; signal?: AbortSignal; revision?: { previous: ArenaSpec; feedback: string }; label?: string },
+) {
+  const response = await chat(config, arenaSpecMessages(text, { knowledge: options.knowledge, revision: options.revision }), {
+    label: options.label || "AI 正在构思应用规格", temperature: 0.45, maxTokens: 5000, reasoningEffort: "low", signal: options.signal,
+  });
+  const spec = normalizeArenaSpec(parseJsonLoose(response.text), text, { rawText: response.text });
+  if (!spec) console.warn("[ASTRA] arena spec could not be parsed:", response.text.slice(0, 2000));
+  return { spec, model: response.model };
+}
+
+/** One model call writes the app spec. An unusable reply falls back to the offline spec instead of failing. */
+export async function analyzeArena(text: string, config: AiConfig, options: { knowledge?: KnowledgeSnippet[]; signal?: AbortSignal } = {}): Promise<NeedAnalysis> {
+  const { spec, model } = await requestArenaSpec(text, config, options);
+  const final: ArenaSpec = spec || { ...arenaOfflineSpec(text), origin: "fallback" };
+  return arenaToAnalysis(final, text, { source: "ai", model, knowledge: options.knowledge });
+}
+
+/**
+ * Arena prompt from a spec: reuse the judged spec (0 calls), revise it with feedback
+ * (1 call), write a new one (1 call), or build offline when `config` is null.
+ */
+export async function optimizeForArena(
+  text: string,
+  config: AiConfig | null,
+  options: { analysis?: NeedAnalysis | null; feedback?: string; knowledge?: KnowledgeSnippet[]; signal?: AbortSignal } = {},
+): Promise<AiOptimizeOutput> {
+  const feedback = options.feedback?.trim() || "";
+  const knowledge = options.knowledge || [];
+  const reusable = options.analysis?.target === "arena" && options.analysis.text === text && options.analysis.arena ? options.analysis : null;
+  const notes: string[] = [];
+  let model = reusable?.model || "";
+  let spec: ArenaSpec;
+  if (feedback && config) {
+    const previous = reusable?.arena || arenaOfflineSpec(text);
+    const revised = await requestArenaSpec(text, config, { knowledge, signal: options.signal, revision: { previous, feedback }, label: "AI 正在按你的意见修改应用规格" });
+    spec = revised.spec || previous;
+    model = revised.model;
+    notes.push(revised.spec ? `按你的意见修改了规格：${feedback}` : "修改回复无法解析，保留了上一版规格");
+  } else if (reusable?.arena) {
+    spec = reusable.arena;
+  } else if (config) {
+    const fresh = await requestArenaSpec(text, config, { knowledge, signal: options.signal });
+    spec = fresh.spec || { ...arenaOfflineSpec(text), origin: "fallback" };
+    model = fresh.model;
+  } else {
+    spec = arenaOfflineSpec(text);
+    if (feedback) spec = { ...spec, constraints: [...spec.constraints, feedback] };
+  }
+
+  const renderOptions = { knowledge, ...DEFAULT_ARENA_OPTIONS };
+  let result = finalizeArenaSpec(spec, text, renderOptions);
+  let repairAttempts = 0;
+  // A spec that mirrors the few-shot example gets one rewrite, but only on custom
+  // endpoints: on the free tier that would cost another 45-second wait.
+  const copied = result.quality.checks.some(check => check.id === "arena-original" && !check.passed);
+  if (copied && config?.provider === "custom" && spec.origin === "ai") {
+    repairAttempts = 1;
+    const en = spec.language === "en";
+    const retry = await requestArenaSpec(text, config, {
+      knowledge, signal: options.signal, label: "正在重写与示例过于相似的规格",
+      revision: { previous: result.spec, feedback: en ? "The features are too close to the example. Redesign the features, states and visuals for this request without reusing the example's subject or numbers." : "功能列表与示例太像了：请针对本次需求重新设计功能、状态和视觉，不要沿用示例的主题和数值" },
+    });
+    if (retry.spec) {
+      const second = finalizeArenaSpec(retry.spec, text, renderOptions);
+      if (second.quality.score >= result.quality.score) { result = second; model = retry.model; }
+    }
+  }
+
+  const final = result.spec;
+  const en = final.language === "en";
+  const kindLabel = frontendKindLabel(final.kind, en);
+  const origin = final.origin === "fallback"
+    ? [en ? "The model reply could not be parsed, so the offline spec was used" : "模型回复无法解析，已改用离线规格"]
+    : final.origin === "offline" ? [en ? "No model connected: built from the request type offline" : "未连接模型：按需求类型生成离线规格"] : [];
+  const summary = en
+    ? [`Organized as a seven-section Arena prompt for a ${kindLabel}`, `${final.features.length} verifiable features and ${final.states.length} states`, "Specific palette with hex values, type scale, layout and motion", "Environment rules written by code: no API keys or backend, only real dependencies and imports"]
+    : [`按「${kindLabel}」整理成 Arena 七段提示词`, `写出 ${final.features.length} 条可验证的功能和 ${final.states.length} 种状态`, "给出带色值的配色、字体层级、布局与动效", "由代码统一写入运行约束：免 API Key 和后端，依赖与 import 必须真实存在"];
+  if (knowledge.length) summary.push(en ? `Included ${knowledge.length} knowledge-base notes` : `引用 ${knowledge.length} 条知识库资料`);
+  const example = pickArenaCase(final.kind, final.language);
+  return {
+    analysis: arenaToAnalysis(final, text, { source: config ? "ai" : "local", model, knowledge }),
+    optimized: result.prompt,
+    quality: result.quality,
+    repairAttempts,
+    changes: [...origin, ...notes, ...summary, ...result.fixes].slice(0, 8),
+    rationale: en
+      ? "Arena voters judge whether the app works, how usable it is, how faithful it is and how it looks, so verifiable features, states and concrete visuals come first and the environment rules are written by code so neither model fails on setup."
+      : "Arena 投票看功能是否可用、是否好用、是否还原需求以及视觉品质，所以把可验证的功能、状态和具体视觉放在前面，运行约束由代码统一生成，避免两边模型因为环境问题直接失败。",
+    model: model || (config ? config.model : "offline"),
+    cases: example ? [{ id: example.id, title: example.input }] : [],
+    knowledgeUsed: knowledge,
+    followUps: buildArenaFollowUps(final),
   };
 }
 

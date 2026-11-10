@@ -183,6 +183,11 @@ export const PROMPT_CASES: PromptCase[] = [
   },
 ];
 
+/** App kinds without their own general-mode example borrow the closest web example. */
+const NEAREST_WEB_KIND: Partial<Record<FrontendKind, FrontendKind>> = {
+  game: "site", tool: "product-ui", clone: "site", visual: "site",
+};
+
 /** Pick examples from the same job, not merely the same broad coding category. */
 export function pickCases(category: string, text: string, count = 2): PromptCase[] {
   const lower = text.toLowerCase();
@@ -198,7 +203,8 @@ export function pickCases(category: string, text: string, count = 2): PromptCase
     pool = pool.filter(item => caseLanguage(item) === language);
   }
   const scored = pool.map(item => {
-    let score = frontend ? (item.webKind === kind ? 40 : item.webKind === "site" ? 12 : 0) : 12;
+    const nearest = kind ? NEAREST_WEB_KIND[kind] : undefined;
+    let score = frontend ? (item.webKind === kind ? 40 : nearest && item.webKind === nearest ? 30 : item.webKind === "site" ? 12 : 0) : 12;
     if (caseLanguage(item) === language) score += 8;
     for (const token of item.input.split(/[，,\s]/)) {
       if (token.length >= 2 && lower.includes(token.slice(0, 2).toLowerCase())) score += 1;

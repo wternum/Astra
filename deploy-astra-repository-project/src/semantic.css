@@ -217,3 +217,13 @@
 .knowledge-scope button.active span { background: color-mix(in srgb, var(--button-ink) 14%, transparent); }
 .knowledge-scope > small { margin-left: auto; color: var(--muted); font-size: 9.5px; }
 @media (max-width: 640px) { .knowledge-scope > small { flex-basis: 100%; margin-left: 0; } }
+
+/* ---- Arena Code target ---- */
+.flow-target-toggle.active { border-color: color-mix(in srgb, #22d3ee 50%, var(--line)); background: color-mix(in srgb, #22d3ee 9%, transparent); color: var(--ink); }
+.flow-followup { margin-top: 12px; }
+.flow-followup-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
+.flow-followup-head strong { color: var(--ink); font-size: 10.5px; }
+.flow-followup pre { max-height: 220px; margin: 0; padding: 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); font: inherit; font-size: 11px; line-height: 1.65; }
+.flow-open-arena { display: inline-flex; align-items: center; gap: 6px; flex: none; margin-left: auto; padding: 9px 13px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--ink); font-size: 12px; font-weight: 700; }
+.flow-open-arena:hover { border-color: var(--hard); }
+.flow-open-arena + .flow-copy { margin-left: -8px; }

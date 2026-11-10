@@ -16,9 +16,10 @@ import {
 } from "@/lib/optimizer";
 import { buildSemanticResult, LAYERS, type LayerId } from "@/lib/semantic";
 import { chat, listModels, type AiConfig } from "@/ai/client";
-import { analyzeNeed, localAnalysis, optimizeWithAi, runComparison, type NeedAnalysis } from "@/ai/engine";
+import { analyzeNeed, localAnalysis, optimizeForArena, optimizeWithAi, runComparison, type NeedAnalysis } from "@/ai/engine";
 import { isEnglishRequest } from "@/ai/frontend";
-import { formatKnowledgeBlock, normalizeKnowledgeEntries, selectRelevantKnowledge } from "@/lib/knowledge";
+import { formatKnowledgeBlock, isInjectableKnowledge, normalizeKnowledgeEntries, selectRelevantKnowledge } from "@/lib/knowledge";
+import { normalizeTarget } from "@/ai/targets";
 import { seedKnowledgeFor } from "@/lib/knowledge-seed";
 import { validateRelations } from "@/lib/knowledge-graph";
 import { normalizeLibrary, libraryForEntry, LIBRARY_IDS } from "@/lib/knowledge-library";
@@ -40,7 +41,7 @@ const PROVIDERS = [
     serverConfigured: true,
     access: "public",
     requiresKey: false,
-    limits: "官方免费通道：同一 IP 每 45 秒仅能获得 1 次回复。ASTRA 会自动排队并显示倒计时；免费模式下需求判定与提示词构建在同一次请求中完成。",
+    limits: "官方免费通道：同一 IP 每 45 秒仅能获得 1 次回复，ASTRA 会自动排队并显示倒计时。Arena 模式每次生成只调用 1 次；通用模式需要 2–3 次（需求判定、构建，必要时返修）。",
     privacy: "公共实验通道。提示词会发送给 Pollinations 及其上游服务；请勿输入密钥、个人身份、客户机密等敏感内容。",
     docsUrl: "https://github.com/pollinations/pollinations/blob/master/APIDOCS.md",
   },
@@ -52,7 +53,7 @@ const PROVIDERS = [
     serverConfigured: false,
     access: "byok",
     requiresKey: false,
-    limits: "额度与计费由你填写的服务商决定。自定义接口没有排队限制，需求判定会在输入时实时进行，再基于判定构建提示词。",
+    limits: "额度与计费由你填写的服务商决定。自定义接口没有排队限制；点击优化时先做需求判定，再基于判定构建提示词。",
     privacy: "浏览器直接请求你填写的地址；Key 只保存在当前标签页会话中，关闭页面即清除，不写入历史记录。",
     docsUrl: "https://platform.openai.com/docs/api-reference/chat",
   },
@@ -187,7 +188,8 @@ function updateKnowledgeEntry(body: Json) {
   const index = custom.findIndex(item => Number(item.id) === id);
   if (index === -1) return null;
   if (typeof body.sourceUrl === "string" && body.sourceUrl.trim() && !knowledgeSource(body)) throw new Error("来源链接必须是有效的 http 或 https 地址");
-  const next = { ...custom[index] };
+  const previous = custom[index];
+  const next = { ...previous };
   for (const key of ["name", "category", "description", "templateText", "accent"] as const) {
     if (typeof body[key] === "string") next[key] = body[key].trim();
   }
@@ -198,6 +200,12 @@ function updateKnowledgeEntry(body: Json) {
   if (body.sourceUrl !== undefined) next.sourceUrl = knowledgeSource(body);
   if (body.library !== undefined) next.library = normalizeLibrary(body.library);
   if (!String(next.name || "").trim() || String(next.name).length > 60 || !String(next.templateText || "").trim() || String(next.templateText).length > 10000) return null;
+  // A starter entry the user has rewritten is now their knowledge: a newer seed
+  // set replaces only untouched `source: "seed"` entries, so keep their edits.
+  const contentKeys = ["name", "category", "description", "templateText", "tags", "relations", "sourceUrl", "library"] as const;
+  if (next.source === "seed" && contentKeys.some(key => JSON.stringify(next[key] ?? null) !== JSON.stringify(previous[key] ?? null))) {
+    next.source = "user";
+  }
   next.updatedAt = new Date().toISOString();
   custom[index] = next;
   persistKnowledge(custom);
@@ -230,31 +238,35 @@ async function handleOptimize(body: Json, signal?: AbortSignal) {
   const feedback = typeof body.feedback === "string" ? body.feedback.trim().slice(0, 600) : "";
   const previous = typeof body.previousPrompt === "string" ? body.previousPrompt : "";
   const forced = pickLayer(body.layerId);
+  const target = normalizeTarget(body.target);
   const config = body.mode === "ai" ? toAiConfig(body.modelConfig) : null;
   ensureSeedKnowledge();
-  const knowledge = body.useKnowledge === false ? [] : selectRelevantKnowledge(prompt, readKnowledge());
+  const knowledge = body.useKnowledge === false ? [] : selectRelevantKnowledge(prompt, readKnowledge(), { target });
+  const parentHistoryId = typeof body.parentHistoryId === "number" ? body.parentHistoryId : null;
+  const analysisInput = (body.analysis && typeof body.analysis === "object" ? body.analysis : null) as NeedAnalysis | null;
 
   if (body.mode === "ai" && !config) return json({ error: "请先连接免费 AI 或自定义接口" }, 400);
 
-  if (config) {
-    const output = await optimizeWithAi(prompt, config, {
-      analysis: (body.analysis && typeof body.analysis === "object" ? body.analysis : null) as NeedAnalysis | null,
-      forced, feedback, previous, knowledge, signal,
-    });
+  if (config || target === "arena") {
+    // Arena without a model still builds from the offline spec and runs the same gate.
+    const output = config
+      ? await optimizeWithAi(prompt, config, { analysis: analysisInput, forced, feedback, previous, knowledge, signal, target })
+      : await optimizeForArena(prompt, null, { feedback, knowledge, signal });
     const result: OptimizeResult = {
       optimized: output.optimized,
       before: analyzeBrief(prompt, options),
       after: analyzePrompt(output.optimized),
       changes: output.changes.length ? output.changes : ["由 AI 根据需求判定重新构建了提示词"],
       rationale: output.rationale || output.analysis.strategy,
-      engine: "ai",
-      model: output.model,
+      engine: config ? "ai" : "local",
+      model: config ? output.model : undefined,
       createdAt: new Date().toISOString(),
+      ...(target === "arena" ? { target, followUps: output.followUps || [] } : {}),
     };
     const historyId = saveHistory(prompt, result, {
       scenario: output.analysis.category, options, feedback: feedback || null,
-      domain: output.analysis.domain, summary: output.analysis.summary,
-      parentHistoryId: typeof body.parentHistoryId === "number" ? body.parentHistoryId : null,
+      domain: output.analysis.domain, summary: output.analysis.summary, parentHistoryId,
+      target, arenaKind: output.analysis.arena?.kind || null, followUps: result.followUps || null,
     });
     return json({ ...result, historyId, analysis: output.analysis, cases: output.cases, quality: output.quality, repairAttempts: output.repairAttempts, knowledgeUsed: output.knowledgeUsed });
   }
@@ -301,10 +313,13 @@ async function route(pathname: string, method: string, search: URLSearchParams, 
     const text = typeof body.prompt === "string" ? body.prompt.trim().slice(0, 12000) : "";
     if (!text) return json({ error: "请先输入一句话" }, 400);
     const forced = pickLayer(body.layerId);
+    const target = normalizeTarget(body.target);
     const config = toAiConfig(body.modelConfig);
-    if (!config) return json(localAnalysis(text, forced));
+    if (!config) return json(localAnalysis(text, forced, target));
+    // The Arena spec is written in this call, so it needs the relevant knowledge now.
+    const knowledge = target === "arena" && body.useKnowledge !== false ? selectRelevantKnowledge(text, readKnowledge(), { target }) : [];
     try {
-      return json(await analyzeNeed(text, config, { forced, signal }));
+      return json(await analyzeNeed(text, config, { forced, signal, target, knowledge }));
     } catch (error) {
       if ((error as Error)?.name === "AbortError") throw error;
       return json({ error: error instanceof Error ? error.message : "需求判定失败" }, 502);
@@ -376,7 +391,10 @@ async function route(pathname: string, method: string, search: URLSearchParams, 
     const entries = knowledgeCatalog();
     if (method === "GET") {
       const custom = readKnowledge();
-      return json({ entries, customCount: custom.length, enabledCount: custom.filter(item => item.enabled !== false).length });
+      // Count only entries that would actually be injected for the requested target.
+      const target = normalizeTarget(search.get("target"));
+      const enabledCount = normalizeKnowledgeEntries(custom).filter(item => isInjectableKnowledge(item, target)).length;
+      return json({ entries, customCount: custom.length, enabledCount });
     }
     if (method === "POST") {
       const row = createKnowledgeEntry(body);
