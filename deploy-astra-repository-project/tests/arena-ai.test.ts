@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { analyzeNeed, optimizeWithAi } from "../src/ai/engine";
+import { analyzeNeed, buildArenaRound, optimizeWithAi } from "../src/ai/engine";
 import { ARENA_CASES } from "../src/ai/arena-cases";
-import { ARENA_REQUIRED_HEADINGS } from "../src/ai/arena";
+import { ARENA_REQUIRED_HEADINGS, normalizeArenaSpec } from "../src/ai/arena";
 
 const custom = { provider: "custom" as const, model: "test-model", baseUrl: "https://example.test/v1" };
 const free = { provider: "pollinations" as const, model: "openai-fast" };
@@ -57,8 +57,11 @@ describe("Arena AI flow", () => {
       assert.equal(output.analysis.target, "arena");
       assert.equal(output.analysis.arena?.origin, "ai");
       assert.equal(output.cases[0].id, "arena-game-zh");
-      assert.equal(output.followUps?.length, 2);
-      assert.match(output.followUps?.[1] || "", /双人模式/);
+      assert.equal(output.arenaScope, "core");
+      // 6 listed features: 5 core, the sixth plus the old follow-up idea go to the backlog.
+      assert.equal(output.analysis.arena?.features.length, 5);
+      assert.ok(output.analysis.arena?.backlog.some(item => /双人模式/.test(item)));
+      assert.match(output.optimized, /本轮先把核心闭环做扎实/);
     } finally { mock.restore(); }
   });
 
@@ -134,7 +137,7 @@ describe("Arena AI flow", () => {
       for (const heading of ARENA_REQUIRED_HEADINGS("en")) assert.match(output.optimized, new RegExp(`^## ${heading}$`, "m"));
       assert.doesNotMatch(output.optimized, /[㐀-鿿]/);
       assert.equal(output.quality.ok, true, output.quality.issues.join(" | "));
-      assert.equal(output.followUps?.length, 1);
+      assert.ok((output.analysis.arena?.backlog.length || 0) >= 2);
     } finally { mock.restore(); }
   });
 
@@ -144,7 +147,45 @@ describe("Arena AI flow", () => {
       const output = await optimizeWithAi("写篇关于远程办公的文章", custom);
       assert.equal(output.analysis.target, undefined);
       assert.match(output.optimized, /^## 目标与交付/m);
-      assert.equal(output.followUps, undefined);
+      assert.equal(output.arenaScope, undefined);
+    } finally { mock.restore(); }
+  });
+});
+
+describe("Arena rounds with a model", () => {
+  const spec = () => {
+    const parsed = normalizeArenaSpec(JSON.parse(shooterSpec), SHOOTER);
+    assert.ok(parsed);
+    return parsed;
+  };
+  it("structures the user's notes with one call", async () => {
+    const mock = mockFetch([JSON.stringify({ issues: [{ symptom: "右边暂停后无法继续", reproduce: "开始后按空格暂停，再按空格", expected: "从暂停处继续" }] })]);
+    try {
+      const { round, quality } = await buildArenaRound(spec(), [], { kind: "fix", observations: "右边暂停后无法继续" }, custom, { original: SHOOTER });
+      assert.equal(mock.requests.length, 1);
+      assert.match(mock.requests[0].messages[0].content, /下一条消息会同时发给两个模型/);
+      assert.match(mock.requests[0].messages[1].content, /"observations": "右边暂停后无法继续"/);
+      assert.equal(round.origin, "ai");
+      assert.match(round.prompt, /若出现：暂停后无法继续 → 复现：开始后按空格暂停，再按空格 → 期望：从暂停处继续/);
+      assert.equal(quality.ok, true, quality.issues.join(" | "));
+    } finally { mock.restore(); }
+  });
+  it("falls back to the rules when the reply is unusable", async () => {
+    const mock = mockFetch(["好的，我会修复这些问题。"]);
+    try {
+      const { round } = await buildArenaRound(spec(), [], { kind: "fix", observations: "左边暂停后无法继续" }, custom, { original: SHOOTER });
+      assert.equal(mock.requests.length, 1);
+      assert.equal(round.origin, "rules");
+      assert.match(round.prompt, /若出现：暂停后无法继续/);
+    } finally { mock.restore(); }
+  });
+  it("needs no call for an extend round without notes", async () => {
+    const mock = mockFetch(["{}"]);
+    try {
+      const current = spec();
+      const { round } = await buildArenaRound(current, [], { kind: "extend", observations: "" }, custom, { original: SHOOTER });
+      assert.equal(mock.requests.length, 0);
+      assert.deepEqual(round.added, current.backlog.slice(0, 2));
     } finally { mock.restore(); }
   });
 });

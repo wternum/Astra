@@ -32,12 +32,32 @@ describe("preview backend", () => {
     assert.equal(data.engine, "local");
     assert.match(data.optimized, /^## 必须可用的功能$/m);
     assert.equal(data.quality.ok, true, (data.quality.issues || []).join(" | "));
-    assert.equal(data.followUps.length, 1);
+    assert.equal(data.arenaScope, "core");
+    assert.ok(data.arenaSpec.backlog.length >= 2);
+    assert.deepEqual(data.arenaRounds, []);
     assert.equal(data.analysis.arena.kind, "game");
     assert.deepEqual(data.knowledgeUsed, []);
     const history = await api("/api/history");
     assert.equal(history.data[0].settings.target, "arena");
     assert.equal(history.data[0].settings.arenaKind, "game");
+  });
+
+  it("generates the next rounds and stores them on the first turn's history record", async () => {
+    const first = await api("/api/optimize", "POST", { prompt: "做一个打砖块小游戏", mode: "local", target: "arena", options: {} });
+    const id = first.data.historyId;
+    const fix = await api("/api/arena/round", "POST", { historyId: id, kind: "fix", observations: "左边暂停后无法继续；右边刷新后最高分丢失", mode: "local" });
+    assert.equal(fix.status, 200);
+    assert.equal(fix.data.round.index, 2);
+    assert.deepEqual(fix.data.round.issues.map((issue: Json) => issue.symptom), ["暂停后无法继续", "刷新后最高分丢失"]);
+    assert.equal(fix.data.quality.ok, true);
+    const extend = await api("/api/arena/round", "POST", { historyId: id, kind: "extend", observations: "", mode: "local" });
+    assert.equal(extend.data.round.index, 3);
+    assert.deepEqual(extend.data.round.added, first.data.arenaSpec.backlog.slice(0, 2));
+    const history = await api("/api/history");
+    const record = history.data.find((item: Json) => item.id === id);
+    assert.equal(record.settings.arenaRounds.length, 2);
+    assert.equal((await api("/api/arena/round", "POST", { historyId: 99999, kind: "fix", observations: "", mode: "local" })).status, 404);
+    assert.equal((await api("/api/arena/round", "POST", { historyId: id, kind: "nope", observations: "", mode: "local" })).status, 400);
   });
 
   it("keeps the general offline builder for the general target", async () => {

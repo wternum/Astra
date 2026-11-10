@@ -10,10 +10,12 @@ import {
   ARENA_HEADINGS, ARENA_LIMITS, ARENA_REQUIRED_HEADINGS, PLACEHOLDER_PATTERN, arenaKindDefaults, arenaLanguage,
   fillTo, fitsLanguage, namedTech, palettePreset, renderArenaPrompt,
   type ArenaLanguage, type ArenaSpec, type RenderArenaOptions,
+  DEFAULT_ARENA_OPTIONS,
 } from "@/ai/arena";
 import { pickArenaCase } from "@/ai/arena-cases";
 import { BLOCKING_PATTERN, containsApproximately, similarity, type PromptCheck, type PromptQuality } from "@/ai/quality";
 import { understand } from "@/lib/semantic";
+import type { ArenaScope } from "@/ai/targets";
 
 /** Asking the builder to plan, ask or document instead of shipping the app. */
 export const ARENA_META_PATTERN = /先(?:输出|给出|提供|写出?)(?:方案|计划|设计稿|结构|大纲|线框)|先(?:向用户)?提问|先确认需求|运行命令|(?:写|编写|提供)\s*README|README\s*(?:文档|说明)|部署步骤|安装说明|ask (?:me|the user|questions) (?:first|before)|(?:present|propose|outline) (?:a |the )?plan (?:first|before)|run command|deployment steps|write (?:a )?README|setup instructions/i;
@@ -80,6 +82,13 @@ function overlap(a: string, b: string, language: ArenaLanguage) {
 export interface ArenaEvaluateOptions {
   /** User knowledge passed to the renderer; the reference block is then expected. */
   knowledgeCount?: number;
+  /** First-turn scope: a core turn lists 3–5 features, a full turn up to 8. */
+  scope?: ArenaScope;
+}
+
+/** Concrete-feature minimum and feature maximum for a first-turn prompt. */
+export function featureBounds(scope: ArenaScope) {
+  return scope === "full" ? { min: 4, max: ARENA_LIMITS.fullFeatures } : { min: ARENA_LIMITS.features[0], max: ARENA_LIMITS.features[1] };
 }
 
 export function evaluateArenaPrompt(prompt: string, original: string, spec: ArenaSpec | null, options: ArenaEvaluateOptions = {}): PromptQuality {
@@ -120,7 +129,8 @@ export function evaluateArenaPrompt(prompt: string, original: string, spec: Aren
 
   const features = listItems(section(h.features));
   const concrete = features.filter(item => ACTION.test(item)).length;
-  add("arena-features", "功能具体可验证", 14, concrete >= 4, `${concrete} / ${features.length} 条功能写成了可观察的行为`);
+  const bounds = featureBounds(options.scope || DEFAULT_ARENA_OPTIONS.scope);
+  add("arena-features", "功能具体可验证", 14, concrete >= bounds.min, `${concrete} / ${features.length} 条功能写成了可观察的行为`);
 
   const states = listItems(section(h.interactions)).filter(item => STATE.test(item)).length;
   add("arena-states", "状态与反馈", 10, states >= 2, states >= 2 ? `覆盖 ${states} 条状态或反馈` : "缺少空、加载、错误、暂停或结束等状态说明");
@@ -150,8 +160,8 @@ export function evaluateArenaPrompt(prompt: string, original: string, spec: Aren
   const contentOk = !placeholder && QUANTITY.test(contentBody);
   add("arena-content", "内容完整逼真", 4, contentOk, placeholder ? "出现了占位文字或待办标记" : contentOk ? "示例内容有数量和类型" : "内容与数据没有写明数量");
 
-  const scope = features.length <= ARENA_LIMITS.features[1] && text.length >= 500 && text.length <= 4500;
-  add("arena-scope", "范围适中", 2, scope, `${features.length} 条功能，${text.length} 字`);
+  const scoped = features.length <= bounds.max && text.length >= 500 && text.length <= 4500;
+  add("arena-scope", "范围适中", 2, scoped, `${features.length} 条功能，${text.length} 字`);
 
   const example = pickArenaCase(spec?.kind || "tool", language);
   // Only model-written specs can copy the example; offline specs use per-kind defaults.
@@ -182,7 +192,7 @@ export function evaluateArenaPrompt(prompt: string, original: string, spec: Aren
 const keepItems = (items: string[], language: ArenaLanguage) => items.filter(item => !ARENA_META_PATTERN.test(item) && !BLOCKING_PATTERN.test(item) && !PLACEHOLDER_PATTERN.test(item) && fitsLanguage(item, language));
 
 /** Repairs the spec for each failed check. Returns the new spec and a note per fix. */
-export function enforceArenaSpec(spec: ArenaSpec, original: string, failed: string[]): { spec: ArenaSpec; fixes: string[] } {
+export function enforceArenaSpec(spec: ArenaSpec, original: string, failed: string[], scope: ArenaScope = DEFAULT_ARENA_OPTIONS.scope): { spec: ArenaSpec; fixes: string[] } {
   const next: ArenaSpec = { ...spec, visual: { ...spec.visual } };
   const defaults = arenaKindDefaults(next.kind, next.language);
   const fixes: string[] = [];
@@ -193,7 +203,7 @@ export function enforceArenaSpec(spec: ArenaSpec, original: string, failed: stri
     next.states = keepItems(next.states, next.language);
     next.content = keepItems(next.content, next.language);
     next.acceptance = keepItems(next.acceptance, next.language);
-    next.followUps = keepItems(next.followUps, next.language);
+    next.backlog = keepItems(next.backlog, next.language);
     for (const key of ["coreLoop", "summary"] as const) {
       if (!keepItems([next[key]], next.language).length) next[key] = key === "coreLoop" ? defaults.coreLoop : next.summary && fitsLanguage(next.summary, next.language) ? next.summary : defaults.coreLoop;
     }
@@ -201,7 +211,9 @@ export function enforceArenaSpec(spec: ArenaSpec, original: string, failed: stri
   }
   if (fail("arena-features") || next.features.length < ARENA_LIMITS.features[0]) {
     const concrete = next.features.filter(item => ACTION.test(item));
-    next.features = fillTo(concrete.length >= 4 ? next.features : concrete, defaults.features, ARENA_LIMITS.features[0], ARENA_LIMITS.features[1]);
+    // Full first turns also list the backlog, so the core list only needs to reach the core minimum.
+    const min = Math.max(ARENA_LIMITS.features[0], featureBounds(scope).min - (scope === "full" ? next.backlog.filter(item => ACTION.test(item)).length : 0));
+    next.features = fillTo(concrete.length >= min ? next.features : concrete, defaults.features, Math.max(min, ARENA_LIMITS.features[0]), ARENA_LIMITS.features[1]);
     if (fail("arena-features")) fixes.push("用该类型的默认功能补足可验证的功能清单");
   }
   if (fail("arena-states") || next.states.length < ARENA_LIMITS.states[0]) {
@@ -236,7 +248,10 @@ export function enforceArenaSpec(spec: ArenaSpec, original: string, failed: stri
     next.quoteRequest = true;
     fixes.push("附上需求原话，避免规格偏离用户点名的对象");
   }
-  if (fail("arena-scope")) next.features = next.features.slice(0, ARENA_LIMITS.features[1]);
+  if (fail("arena-scope")) {
+    next.features = next.features.slice(0, ARENA_LIMITS.features[1]);
+    if (scope === "full") next.backlog = next.backlog.slice(0, ARENA_LIMITS.fullFeatures - next.features.length);
+  }
   return { spec: next, fixes };
 }
 
@@ -248,15 +263,17 @@ export function finalizeArenaSpec(spec: ArenaSpec, original: string, options: Re
   const fixes: string[] = [];
   const render = (value: ArenaSpec) => renderArenaPrompt(value, { ...options, request: original });
   let prompt = render(current);
-  let quality = evaluateArenaPrompt(prompt, original, current, { knowledgeCount: options.knowledge?.length });
+  const scope = options.scope || DEFAULT_ARENA_OPTIONS.scope;
+  const evaluate = (value: ArenaSpec, text: string) => evaluateArenaPrompt(text, original, value, { knowledgeCount: options.knowledge?.length, scope });
+  let quality = evaluate(current, prompt);
   for (let round = 0; round < 2; round++) {
     const failed = quality.checks.filter(check => !check.passed && CRITICAL_FIXABLE.includes(check.id)).map(check => check.id);
     if (!failed.length) break;
-    const repaired = enforceArenaSpec(current, original, failed);
+    const repaired = enforceArenaSpec(current, original, failed, scope);
     current = repaired.spec;
     fixes.push(...repaired.fixes);
     prompt = render(current);
-    quality = evaluateArenaPrompt(prompt, original, current, { knowledgeCount: options.knowledge?.length });
+    quality = evaluate(current, prompt);
   }
   return { spec: current, prompt, quality, fixes: [...new Set(fixes)] };
 }

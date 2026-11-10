@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
-  ARENA_REQUIRED_HEADINGS, arenaOfflineSpec, arenaSpecMessages, buildArenaFollowUps, namedTech, normalizeArenaSpec,
+  ARENA_REQUIRED_HEADINGS, arenaOfflineSpec, arenaSpecMessages, firstTurnFeatures, namedTech, normalizeArenaSpec,
   renderArenaPrompt, sandboxRules, type ArenaSpec,
 } from "../src/ai/arena";
 import { ARENA_CASES, pickArenaCase } from "../src/ai/arena-cases";
@@ -40,6 +40,12 @@ describe("Arena few-shot examples", () => {
       const quality = evaluateArenaPrompt(renderArenaPrompt(spec), item.input, spec);
       assert.equal(quality.ok, true, `${item.id}: ${quality.issues.join(" | ")}`);
       assert.deepEqual(failing(quality).filter(id => id !== "arena-original"), []);
+      const full = evaluateArenaPrompt(renderArenaPrompt(spec, { scope: "full" }), item.input, spec, { scope: "full" });
+      assert.equal(full.ok, true, `${item.id} (full): ${full.issues.join(" | ")}`);
+    });
+    it(`${item.id} splits a core loop from a backlog`, () => {
+      assert.ok(item.spec.features.length >= 3 && item.spec.features.length <= 5, item.id);
+      assert.ok(item.spec.backlog.length >= 2, item.id);
     });
   }
   it("covers seven Arena build kinds in both languages", () => {
@@ -104,14 +110,14 @@ describe("Arena spec parsing", () => {
     const spec = normalizeArenaSpec(null, "做一个番茄钟应用", { rawText: truncated });
     assert.ok(spec);
     assert.equal(spec.features[0], "25 分钟专注计时");
-    assert.ok(spec.features.length >= 5);
+    assert.ok(spec.features.length >= 3);
   });
   it("drops wrong-language and placeholder items, then refills from defaults", () => {
     const spec = normalizeArenaSpec({ features: ["Arrow keys move the snake", "吃到食物 +10 分", "TODO: power-ups", "【待补充】"] }, "做一个贪吃蛇小游戏");
     assert.ok(spec);
     assert.ok(spec.features.every(item => !/Arrow keys|TODO|待补充/.test(item)));
     assert.ok(spec.features.includes("吃到食物 +10 分"));
-    assert.ok(spec.features.length >= 5);
+    assert.ok(spec.features.length >= 3);
     const english = normalizeArenaSpec({ features: ["方向键控制", "Arrow keys steer the ship"] }, "Make a playable space shooter game");
     assert.ok(english && english.features.every(item => !/[㐀-鿿]/.test(item)));
   });
@@ -139,13 +145,26 @@ describe("Arena rendering", () => {
     assert.match(prompt, /text wordmark instead of the official logo/);
     assert.doesNotMatch(prompt, /[㐀-鿿]/);
   });
-  it("writes a polish follow-up from the spec and a bonus round when suggested", () => {
+  it("lists only the core loop in a core first turn and the backlog in a full one", () => {
     const spec = caseSpec(0);
-    const followUps = buildArenaFollowUps(spec);
-    assert.equal(followUps.length, 2);
-    assert.match(followUps[0], /逐项实际操作并修好这些功能：3 关不同砖块布局/);
-    assert.match(followUps[1], /Boss 砖块/);
-    assert.equal(buildArenaFollowUps({ ...spec, followUps: [] }).length, 1);
+    const core = renderArenaPrompt(spec);
+    const full = renderArenaPrompt(spec, { scope: "full" });
+    assert.match(core, /本轮先把核心闭环做扎实/);
+    assert.doesNotMatch(core, /连续击碎 5 块/);
+    assert.match(full, /连续击碎 5 块/);
+    assert.doesNotMatch(full, /本轮先把核心闭环做扎实/);
+    assert.equal(firstTurnFeatures(spec, "full").length, Math.min(8, spec.features.length + spec.backlog.length));
+  });
+  it("moves features beyond the core loop into the backlog and keeps legacy follow-ups", () => {
+    const spec = normalizeArenaSpec({ features: ["1 关", "2 分", "3 秒暂停", "4 条命", "5 种道具", "6 个关卡", "7 种皮肤"], followUps: ["加入 Boss"] }, "做一个贪吃蛇小游戏");
+    assert.ok(spec);
+    assert.deepEqual(spec.features, ["1 关", "2 分", "3 秒暂停", "4 条命", "5 种道具"]);
+    assert.deepEqual(spec.backlog.slice(0, 3), ["6 个关卡", "7 种皮肤", "加入 Boss"]);
+  });
+  it("keeps a backlog for offline specs", () => {
+    const spec = arenaOfflineSpec("做一个贪吃蛇小游戏");
+    assert.ok(spec.features.length >= 3 && spec.features.length <= 5);
+    assert.ok(spec.backlog.length >= 2);
   });
 });
 

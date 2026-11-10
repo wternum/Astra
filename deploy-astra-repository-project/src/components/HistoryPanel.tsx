@@ -5,6 +5,9 @@ import { ArrowRight, ArrowUpRight, Check, ChevronDown, Clock3, Copy, History, Re
 import type { WorkspaceImport } from "@/components/Optimizer";
 import { analyzePrompt, SCENARIOS, type AnalysisResult, type OptimizeOptions, type OptimizeResult } from "@/lib/optimizer";
 import { frontendKindLabel, FRONTEND_KINDS, type FrontendKind } from "@/ai/frontend";
+import type { ArenaSpec } from "@/ai/arena";
+import type { ArenaRound } from "@/ai/arena-rounds";
+import { normalizeScope } from "@/ai/targets";
 import { confirmAction } from "@/lib/confirm";
 
 interface HistoryItem {
@@ -15,7 +18,7 @@ interface HistoryItem {
   scoreBefore: number;
   scoreAfter: number;
   createdAt: string;
-  settings: { options?: Partial<OptimizeOptions>; engine?: "local" | "ai"; model?: string; target?: "arena" | "general"; arenaKind?: string | null; followUps?: string[] | null } | null;
+  settings: { options?: Partial<OptimizeOptions>; engine?: "local" | "ai"; model?: string; target?: "arena" | "general"; arenaKind?: string | null; arenaSpec?: ArenaSpec; arenaScope?: string; arenaRounds?: ArenaRound[] } | null;
   analysis: { before?: AnalysisResult; after?: AnalysisResult; changes?: string[]; rationale?: string } | null;
 }
 interface FavoriteItem {
@@ -82,7 +85,12 @@ export default function HistoryPanel({ onRestore, onCountChange }: { onRestore: 
       model: item.settings?.model || undefined,
       historyId: item.id,
       createdAt: item.createdAt,
-      ...(item.settings?.target === "arena" ? { target: "arena" as const, followUps: Array.isArray(item.settings.followUps) ? item.settings.followUps : [] } : {}),
+      ...(item.settings?.target === "arena" ? {
+        target: "arena" as const,
+        arenaSpec: item.settings.arenaSpec,
+        arenaScope: normalizeScope(item.settings.arenaScope),
+        arenaRounds: Array.isArray(item.settings.arenaRounds) ? item.settings.arenaRounds : [],
+      } : {}),
     };
     onRestore({ prompt: item.originalPrompt, scenario: item.scenario, options: item.settings?.options, result, target: item.settings?.target === "arena" ? "arena" : "general" });
   };
@@ -90,7 +98,8 @@ export default function HistoryPanel({ onRestore, onCountChange }: { onRestore: 
   const kindLabel = (item: HistoryItem) => {
     if (item.settings?.target !== "arena") return SCENARIOS.find(s => s.id === item.scenario)?.label || "通用任务";
     const kind = (FRONTEND_KINDS as readonly string[]).includes(item.settings.arenaKind || "") ? item.settings.arenaKind as FrontendKind : null;
-    return kind ? `Arena · ${frontendKindLabel(kind)}` : "Arena";
+    const rounds = Array.isArray(item.settings.arenaRounds) ? item.settings.arenaRounds.length : 0;
+    return `${kind ? `Arena · ${frontendKindLabel(kind)}` : "Arena"}${rounds ? ` · 已迭代 ${rounds} 轮` : ""}`;
   };
   const date = (value: string) => new Date(value).toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" });
 

@@ -17,20 +17,31 @@ export type ArenaStack = "react" | "html" | "neutral";
 /** "realistic": coherent fictional demo content. "labelled": mark demo content as replaceable. */
 export type ArenaContentPolicy = "realistic" | "labelled";
 
+/**
+ * First-turn scope. "core": only the core loop (3–5 features), the rest is a
+ * backlog added in later rounds. "full": core and backlog in the first turn.
+ */
+export type ArenaScope = "core" | "full";
+
 export interface TargetDefaults {
   target: PromptTarget;
-  arena: { stack: ArenaStack; content: ArenaContentPolicy; followUps: boolean };
+  arena: { stack: ArenaStack; content: ArenaContentPolicy; scope: ArenaScope };
 }
 
 /**
  * Product decisions for the Arena Code target (2026-11-10): Arena is the default
  * workspace target, Arena builds are multi-file React projects, demo content may
- * be realistic fiction, and copyable follow-up prompts are offered.
+ * be realistic fiction, and the first turn builds the core loop so later rounds
+ * can fix, polish, harden and extend the same project.
  */
 export const TARGET_DEFAULTS: TargetDefaults = {
   target: "arena",
-  arena: { stack: "react", content: "realistic", followUps: true },
+  arena: { stack: "react", content: "realistic", scope: "core" },
 };
+
+export function normalizeScope(value: unknown, fallback: ArenaScope = TARGET_DEFAULTS.arena.scope): ArenaScope {
+  return value === "core" || value === "full" ? value : fallback;
+}
 
 export function normalizeTarget(value: unknown, fallback: PromptTarget = "general"): PromptTarget {
   return value === "arena" || value === "general" ? value : fallback;

@@ -104,8 +104,9 @@ npm run preview -- --host 0.0.0.0 --port 4173
     ├── ai/
     │   ├── client.ts        # AI 客户端：免费 AI / 自定义接口、45 秒排队、代理回退
     │   ├── engine.ts        # 提示词工程：通用（判定 → 构建 → 返修）与 Arena（一次规格调用）
-    │   ├── targets.ts       # 目标平台与 Arena 默认决策（技术栈、内容政策、追问）
-    │   ├── arena.ts         # Arena 规格：模型消息、清洗、类型默认值、七段渲染、追问
+    │   ├── targets.ts       # 目标平台与 Arena 默认决策（技术栈、内容政策、首轮范围）
+    │   ├── arena.ts         # Arena 首轮规格：模型消息、清洗、核心 / 待办、类型默认值、七段渲染
+    │   ├── arena-rounds.ts  # Arena 后续轮次：修复 / 打磨 / 健壮性 / 加功能、回归清单、对两边都成立的写法
     │   ├── arena-cases.ts   # Arena 规格示例（7 类 × 中英）
     │   ├── arena-quality.ts # Arena 确定性校验与代码补齐
     │   ├── json.ts          # 小模型 JSON 容错解析

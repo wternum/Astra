@@ -16,10 +16,12 @@ import {
 } from "@/lib/optimizer";
 import { buildSemanticResult, LAYERS, type LayerId } from "@/lib/semantic";
 import { chat, listModels, type AiConfig } from "@/ai/client";
-import { analyzeNeed, localAnalysis, optimizeForArena, optimizeWithAi, runComparison, type NeedAnalysis } from "@/ai/engine";
+import { analyzeNeed, buildArenaRound, localAnalysis, optimizeForArena, optimizeWithAi, runComparison, type NeedAnalysis } from "@/ai/engine";
 import { isEnglishRequest } from "@/ai/frontend";
 import { formatKnowledgeBlock, isInjectableKnowledge, normalizeKnowledgeEntries, selectRelevantKnowledge } from "@/lib/knowledge";
-import { normalizeTarget } from "@/ai/targets";
+import { normalizeScope, normalizeTarget } from "@/ai/targets";
+import { ROUND_KINDS, type ArenaRound, type RoundKind } from "@/ai/arena-rounds";
+import type { ArenaSpec } from "@/ai/arena";
 import { seedKnowledgeFor } from "@/lib/knowledge-seed";
 import { validateRelations } from "@/lib/knowledge-graph";
 import { normalizeLibrary, libraryForEntry, LIBRARY_IDS } from "@/lib/knowledge-library";
@@ -248,10 +250,14 @@ async function handleOptimize(body: Json, signal?: AbortSignal) {
   if (body.mode === "ai" && !config) return json({ error: "请先连接免费 AI 或自定义接口" }, 400);
 
   if (config || target === "arena") {
+    const scope = normalizeScope(body.scope);
     // Arena without a model still builds from the offline spec and runs the same gate.
     const output = config
-      ? await optimizeWithAi(prompt, config, { analysis: analysisInput, forced, feedback, previous, knowledge, signal, target })
-      : await optimizeForArena(prompt, null, { feedback, knowledge, signal });
+      ? await optimizeWithAi(prompt, config, { analysis: analysisInput, forced, feedback, previous, knowledge, signal, target, scope })
+      : await optimizeForArena(prompt, null, { feedback, knowledge, signal, scope });
+    const arena = target === "arena" && output.analysis.arena
+      ? { target, arenaSpec: output.analysis.arena, arenaScope: output.arenaScope || scope, arenaRounds: [] }
+      : {};
     const result: OptimizeResult = {
       optimized: output.optimized,
       before: analyzeBrief(prompt, options),
@@ -261,12 +267,13 @@ async function handleOptimize(body: Json, signal?: AbortSignal) {
       engine: config ? "ai" : "local",
       model: config ? output.model : undefined,
       createdAt: new Date().toISOString(),
-      ...(target === "arena" ? { target, followUps: output.followUps || [] } : {}),
+      ...arena,
     };
+    // The spec and its rounds live on this history record: later turns build on it.
     const historyId = saveHistory(prompt, result, {
       scenario: output.analysis.category, options, feedback: feedback || null,
       domain: output.analysis.domain, summary: output.analysis.summary, parentHistoryId,
-      target, arenaKind: output.analysis.arena?.kind || null, followUps: result.followUps || null,
+      target, arenaKind: output.analysis.arena?.kind || null, ...arena,
     });
     return json({ ...result, historyId, analysis: output.analysis, cases: output.cases, quality: output.quality, repairAttempts: output.repairAttempts, knowledgeUsed: output.knowledgeUsed });
   }
@@ -332,6 +339,33 @@ async function route(pathname: string, method: string, search: URLSearchParams, 
     } catch (error) {
       if ((error as Error)?.name === "AbortError") throw error;
       return json({ error: error instanceof Error ? error.message : "AI 优化失败" }, 502);
+    }
+  }
+
+  // Next turn of an Arena battle, built on the spec and rounds stored with the first turn.
+  if (pathname === "/api/arena/round" && method === "POST") {
+    const id = Number(body.historyId);
+    const kind = String(body.kind || "") as RoundKind;
+    if (!ROUND_KINDS.includes(kind)) return json({ error: "请选择本轮要做什么" }, 400);
+    const observations = typeof body.observations === "string" ? body.observations.trim().slice(0, 2000) : "";
+    const history = readStore<Json[]>(HISTORY_KEY, []);
+    const record = history.find(item => item.id === id);
+    const settings = (record?.settings && typeof record.settings === "object" ? record.settings : {}) as Json;
+    const spec = settings.arenaSpec as ArenaSpec | undefined;
+    if (!record || !spec) return json({ error: "找不到这一局的首轮规格，请先重新生成首轮提示词" }, 404);
+    const rounds = Array.isArray(settings.arenaRounds) ? settings.arenaRounds as ArenaRound[] : [];
+    const config = body.mode === "ai" ? toAiConfig(body.modelConfig) : null;
+    try {
+      const { round, quality, model } = await buildArenaRound(spec, rounds, { kind, observations }, config, {
+        scope: normalizeScope(settings.arenaScope), original: String(record.originalPrompt || ""), signal,
+      });
+      const nextRounds = [...rounds, round];
+      record.settings = { ...settings, arenaRounds: nextRounds };
+      writeStore(HISTORY_KEY, history);
+      return json({ round, rounds: nextRounds, quality, model: model || null });
+    } catch (error) {
+      if ((error as Error)?.name === "AbortError") throw error;
+      return json({ error: error instanceof Error ? error.message : "生成下一轮失败" }, 502);
     }
   }
 

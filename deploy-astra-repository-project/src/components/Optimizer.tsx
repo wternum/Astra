@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight, ArrowUpRight, BookOpen, Check, ChevronDown, CircleHelp, ClipboardCheck,
-  Clock3, Copy, Download, FileText, FlaskConical, Loader2, MessagesSquare,
+  Clock3, Copy, Download, FileText, FlaskConical, Layers, Loader2,
   Pencil, Play, Plus, RotateCcw, Save, Send, Sparkles, Star, Swords,
   PlugZap, Wand2, X,
 } from "lucide-react";
@@ -18,7 +18,9 @@ import { evaluateArenaPrompt } from "@/ai/arena-quality";
 import { PROMPT_CASES } from "@/ai/cases";
 import { ARENA_CASES } from "@/ai/arena-cases";
 import { frontendKindLabel } from "@/ai/frontend";
-import { normalizeTarget, TARGET_DEFAULTS, type PromptTarget } from "@/ai/targets";
+import { normalizeScope, normalizeTarget, TARGET_DEFAULTS, type ArenaScope, type PromptTarget } from "@/ai/targets";
+import ArenaRounds from "@/components/ArenaRounds";
+import type { ArenaRound } from "@/ai/arena-rounds";
 import type { KnowledgeSnippet } from "@/lib/knowledge";
 
 /** Arena Code mode on the official site, where the optimized prompt is pasted. */
@@ -35,9 +37,14 @@ export interface WorkspaceImport {
 
 const TEMPLATE_CATEGORIES: Record<string, string> = { general: "通用", writing: "写作", coding: "开发", analysis: "分析", marketing: "营销", learning: "学习", creative: "创意", data: "数据", work: "效率" };
 const TARGET_KEY = "astra:target:v1";
+const SCOPE_KEY = "astra:arena-scope:v1";
 
 function storedTarget(): PromptTarget {
   try { return normalizeTarget(localStorage.getItem(TARGET_KEY), TARGET_DEFAULTS.target); } catch { return TARGET_DEFAULTS.target; }
+}
+
+function storedScope(): ArenaScope {
+  try { return normalizeScope(localStorage.getItem(SCOPE_KEY)); } catch { return TARGET_DEFAULTS.arena.scope; }
 }
 
 /** Quick-start chips: Arena build prompts, or the general task examples. */
@@ -86,12 +93,13 @@ export default function Optimizer({
   const [resultKnowledge, setResultKnowledge] = useState<KnowledgeSnippet[]>([]);
   const [target, setTarget] = useState<PromptTarget>(storedTarget);
   const [sourceTarget, setSourceTarget] = useState<PromptTarget>(target);
-  const [copiedFollowUp, setCopiedFollowUp] = useState<number | null>(null);
+  const [scope, setScope] = useState<ArenaScope>(storedScope);
   const requestRef = useRef<AbortController | null>(null);
   const isPublic = modelConfig?.provider === "pollinations";
   const arena = target === "arena";
 
   useEffect(() => { try { localStorage.setItem(TARGET_KEY, target); } catch { /* Optional preference. */ } }, [target]);
+  useEffect(() => { try { localStorage.setItem(SCOPE_KEY, scope); } catch { /* Optional preference. */ } }, [scope]);
 
   useEffect(() => {
     if (!loading && !tryLoading) { setElapsed(0); return; }
@@ -181,7 +189,8 @@ export default function Optimizer({
     document.getElementById("goal")?.focus();
   };
 
-  const generate = async (isRevision = false, forceMode?: "local" | "ai") => {
+  const generate = async (isRevision = false, forceMode?: "local" | "ai", scopeOverride?: ArenaScope) => {
+    const runScope = scopeOverride || scope;
     if (loading) return;
     const runMode = forceMode || mode;
     if (!prompt.trim()) { jumpToInput(); return; }
@@ -212,7 +221,7 @@ export default function Optimizer({
         method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
         body: JSON.stringify({
           prompt, options: DEFAULT_OPTIONS, mode: runMode, modelConfig: runMode === "ai" ? modelConfig : undefined,
-          useKnowledge, target,
+          useKnowledge, target, scope: runScope,
           analysis: runMode === "ai" ? analysisForBuild || (aiFresh ? aiAnalysis : undefined) : undefined,
           feedback: isRevision ? feedback : "",
           previousPrompt: isRevision ? result?.optimized : undefined,
@@ -271,9 +280,17 @@ export default function Optimizer({
     window.open(ARENA_CODE_URL, "_blank", "noopener,noreferrer");
   };
 
-  const copyFollowUp = async (text: string, index: number) => {
-    try { await navigator.clipboard.writeText(text); setCopiedFollowUp(index); window.setTimeout(() => setCopiedFollowUp(null), 2000); }
-    catch { setNotice("复制失败，请选中文本手动复制"); }
+  /** The spec is unchanged, so switching the first-turn scope re-renders without a model call. */
+  const changeScope = () => {
+    const next: ArenaScope = scope === "core" ? "full" : "core";
+    setScope(next);
+    if (result?.target === "arena" && sourcePrompt === prompt && !loading) void generate(false, undefined, next);
+  };
+
+  const updateRounds = (rounds: ArenaRound[]) => {
+    if (!result) return;
+    const updated: OptimizeResult = { ...result, arenaRounds: rounds };
+    setResult(updated); setVersions(old => old.map((item, i) => i === activeVersion ? updated : item));
   };
 
   const downloadResult = () => {
@@ -372,6 +389,7 @@ export default function Optimizer({
           <span className="flow-private-note">{trimmed ? "已收到你的想法，点击优化即可开始" : arena ? "游戏、工具、看板、落地页、网店、复刻都可以" : "不需要填写角色、格式或一整份说明"}</span>
           <div className="flow-foot-actions">
             <button type="button" className={`flow-knowledge-toggle flow-target-toggle ${arena ? "active" : ""}`} onClick={() => setTarget(value => value === "arena" ? "general" : "arena")} aria-pressed={arena} title={arena ? "当前生成用于 arena.ai Code 模式的提示词，点击切换为通用提示词" : "当前为通用提示词，点击切换为 arena.ai Code 模式提示词"}><Swords size={13} />{arena ? "目标 · Arena Code" : "目标 · 通用"}</button>
+            {arena && <button type="button" className={`flow-knowledge-toggle flow-scope-toggle ${scope === "core" ? "active" : ""}`} onClick={changeScope} aria-pressed={scope === "core"} title={scope === "core" ? "首轮只做核心闭环，其余功能进入待办，由后续轮次加入。点击切换为完整首轮" : "首轮一次写满全部功能。点击切换为核心首轮 + 逐轮扩展"}><Layers size={13} />{scope === "core" ? "首轮 · 核心" : "首轮 · 完整"}</button>}
             <button type="button" className={`flow-knowledge-toggle ${useKnowledge ? "active" : ""}`} onClick={() => setUseKnowledge(value => !value)} aria-pressed={useKnowledge} title="切换是否让相关知识参与提示词构建"><BookOpen size={13} />知识库 {knowledgeCount} 条 · {useKnowledge ? "参与构建" : "关闭"}</button>
             <button type="button" className="flow-knowledge-open" onClick={onOpenKnowledge} aria-label="管理知识库" title="管理知识库"><ArrowUpRight size={13} /></button>
             <button type="button" className="flow-model-link" onClick={onOpenModel}><PlugZap size={13} />{mode === "ai" ? isPublic ? "免费 AI 已连接" : "自定义 AI 已连接" : "离线模式 · 连接 AI"}<ArrowUpRight size={12} /></button>
@@ -406,8 +424,8 @@ export default function Optimizer({
           </div>
           {versions.length > 1 && <div className="flow-versions"><span>版本</span>{versions.map((version, index) => <button type="button" key={`${version.historyId || index}-${index}`} className={activeVersion === index ? "active" : ""} onClick={() => selectVersion(index)}>V{index + 1}</button>)}</div>}
           {notice && <div className="flow-notice" role="status"><Check size={14} />{notice}</div>}
+          {result.target === "arena" && result.arenaSpec && <ArenaRounds historyId={result.historyId} spec={result.arenaSpec} scope={result.arenaScope || "core"} rounds={result.arenaRounds || []} modelConfig={modelConfig} onChange={updateRounds} />}
           <div className="flow-secondary">
-            {result.followUps && result.followUps.length > 0 && <details className="flow-detail flow-followups"><summary><MessagesSquare size={16} /> 追问提示词（可选） <ChevronDown size={15} /></summary><div className="flow-detail-body"><p>首轮结果出来后，在 Arena 里接着发送，让两个模型自查并完善。</p>{result.followUps.map((text, index) => <div className="flow-followup" key={index}><div className="flow-followup-head"><strong>{index === 0 ? "第二轮 · 自查打磨" : "第三轮 · 加分项"}</strong><button type="button" className="flow-small-action" onClick={() => void copyFollowUp(text, index)}>{copiedFollowUp === index ? <Check size={14} /> : <Copy size={14} />}{copiedFollowUp === index ? "已复制" : "复制"}</button></div><pre>{text}</pre></div>)}</div></details>}
             <details className="flow-detail"><summary><RotateCcw size={16} /> 继续调整 <ChevronDown size={15} /></summary><div className="flow-detail-body"><p>告诉我哪里还不对，我会基于这版重新优化。</p><div className="flow-revision"><input className="form-input" value={feedback} onChange={e => setFeedback(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && feedback.trim() && !loading) void generate(true); }} placeholder="例如：更简短一些，强调实际操作" maxLength={600} /><button type="button" onClick={() => void generate(true)} disabled={loading || !feedback.trim()}><Send size={15} /> 生成新版</button></div></div></details>
             <details className="flow-detail"><summary><ClipboardCheck size={16} /> 更多操作与校验 <ChevronDown size={15} /></summary>
               <div className="flow-detail-body flow-more-body">

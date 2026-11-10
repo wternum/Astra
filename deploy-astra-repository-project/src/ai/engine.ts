@@ -21,11 +21,12 @@ import { enforceFrontendContract, enforceGrounding, enforceKnowledge, evaluatePr
 import { buildFrontendBrief, FRONTEND_BUILDER_RULES, FRONTEND_BUILDER_RULES_EN, isDesignOnlyRequest, isEnglishRequest, isFrontendRequest, type FrontendBrief } from "@/ai/frontend";
 import { knowledgeForCompiler, type KnowledgeSnippet } from "@/lib/knowledge";
 import { extractStringField, parseJsonLoose, str, strList } from "@/ai/json";
-import { arenaOfflineSpec, arenaSpecMessages, buildArenaFollowUps, DEFAULT_ARENA_OPTIONS, normalizeArenaSpec, type ArenaSpec } from "@/ai/arena";
+import { arenaOfflineSpec, arenaSpecMessages, DEFAULT_ARENA_OPTIONS, normalizeArenaSpec, type ArenaSpec } from "@/ai/arena";
+import { buildRoundOffline, evaluateRound, roundFromModel, roundMessages, type ArenaRound, type RoundRequest } from "@/ai/arena-rounds";
 import { finalizeArenaSpec } from "@/ai/arena-quality";
 import { pickArenaCase } from "@/ai/arena-cases";
 import { frontendKindLabel } from "@/ai/frontend";
-import type { PromptTarget } from "@/ai/targets";
+import type { ArenaScope, PromptTarget } from "@/ai/targets";
 
 export { parseJsonLoose } from "@/ai/json";
 
@@ -78,8 +79,8 @@ export interface AiOptimizeOutput {
   model: string;
   cases: { id: string; title: string }[];
   knowledgeUsed: KnowledgeSnippet[];
-  /** Arena target only: copyable prompts for later turns of the battle. */
-  followUps?: string[];
+  /** Arena target only: the first-turn scope the prompt was rendered with. */
+  arenaScope?: ArenaScope;
 }
 
 const CATEGORY_IDS = LAYERS.map(layer => layer.id);
@@ -381,7 +382,7 @@ export async function analyzeNeed(
 export async function optimizeWithAi(
   text: string,
   config: AiConfig,
-  options: { analysis?: NeedAnalysis | null; forced?: LayerId | null; feedback?: string; previous?: string; knowledge?: KnowledgeSnippet[]; signal?: AbortSignal; target?: PromptTarget } = {},
+  options: { analysis?: NeedAnalysis | null; forced?: LayerId | null; feedback?: string; previous?: string; knowledge?: KnowledgeSnippet[]; signal?: AbortSignal; target?: PromptTarget; scope?: ArenaScope } = {},
 ): Promise<AiOptimizeOutput> {
   if (options.target === "arena") return optimizeForArena(text, config, options);
   const feedback = options.feedback?.trim() || "";
@@ -526,7 +527,7 @@ export async function analyzeArena(text: string, config: AiConfig, options: { kn
 export async function optimizeForArena(
   text: string,
   config: AiConfig | null,
-  options: { analysis?: NeedAnalysis | null; feedback?: string; knowledge?: KnowledgeSnippet[]; signal?: AbortSignal } = {},
+  options: { analysis?: NeedAnalysis | null; feedback?: string; knowledge?: KnowledgeSnippet[]; signal?: AbortSignal; scope?: ArenaScope } = {},
 ): Promise<AiOptimizeOutput> {
   const feedback = options.feedback?.trim() || "";
   const knowledge = options.knowledge || [];
@@ -551,7 +552,8 @@ export async function optimizeForArena(
     if (feedback) spec = { ...spec, constraints: [...spec.constraints, feedback] };
   }
 
-  const renderOptions = { knowledge, ...DEFAULT_ARENA_OPTIONS };
+  const scope = options.scope || DEFAULT_ARENA_OPTIONS.scope;
+  const renderOptions = { knowledge, ...DEFAULT_ARENA_OPTIONS, scope };
   let result = finalizeArenaSpec(spec, text, renderOptions);
   let repairAttempts = 0;
   // A spec that mirrors the few-shot example gets one rewrite, but only on custom
@@ -579,6 +581,7 @@ export async function optimizeForArena(
   const summary = en
     ? [`Organized as a seven-section Arena prompt for a ${kindLabel}`, `${final.features.length} verifiable features and ${final.states.length} states`, "Specific palette with hex values, type scale, layout and motion", "Environment rules written by code: no API keys or backend, only real dependencies and imports"]
     : [`按「${kindLabel}」整理成 Arena 七段提示词`, `写出 ${final.features.length} 条可验证的功能和 ${final.states.length} 种状态`, "给出带色值的配色、字体层级、布局与动效", "由代码统一写入运行约束：免 API Key 和后端，依赖与 import 必须真实存在"];
+  if (scope === "core" && final.backlog.length) summary.splice(1, 1, en ? `The first turn builds ${final.features.length} core features; ${final.backlog.length} more wait in the backlog for later turns` : `首轮只做 ${final.features.length} 条核心功能，另有 ${final.backlog.length} 条进入待办，留给后续轮次`);
   if (knowledge.length) summary.push(en ? `Included ${knowledge.length} knowledge-base notes` : `引用 ${knowledge.length} 条知识库资料`);
   const example = pickArenaCase(final.kind, final.language);
   return {
@@ -593,8 +596,36 @@ export async function optimizeForArena(
     model: model || (config ? config.model : "offline"),
     cases: example ? [{ id: example.id, title: example.input }] : [],
     knowledgeUsed: knowledge,
-    followUps: buildArenaFollowUps(final),
+    arenaScope: scope,
   };
+}
+
+/**
+ * Next turn of an Arena battle. With a model, one call structures the user's notes;
+ * an unusable reply (or no model) falls back to the rule-based reading.
+ */
+export async function buildArenaRound(
+  spec: ArenaSpec,
+  rounds: ArenaRound[],
+  request: RoundRequest,
+  config: AiConfig | null,
+  options: { scope?: ArenaScope; original: string; signal?: AbortSignal },
+): Promise<{ round: ArenaRound; quality: PromptQuality; model?: string }> {
+  const scope = options.scope || DEFAULT_ARENA_OPTIONS.scope;
+  let round: ArenaRound | null = null;
+  let model: string | undefined;
+  // An extend round without notes just takes the next backlog items; no call needed.
+  const needsModel = Boolean(config && request.observations.trim());
+  if (needsModel && config) {
+    const response = await chat(config, roundMessages(spec, rounds, request, scope, options.original), {
+      label: "AI 正在整理下一轮的问题清单", temperature: 0.2, maxTokens: 3000, reasoningEffort: "low", signal: options.signal,
+    });
+    round = roundFromModel(parseJsonLoose(response.text), spec, rounds, request, scope);
+    model = response.model;
+    if (!round) console.warn("[ASTRA] round reply could not be parsed:", response.text.slice(0, 1200));
+  }
+  if (!round) round = buildRoundOffline(spec, rounds, request, scope);
+  return { round, quality: evaluateRound(round.prompt, spec), model };
 }
 
 /** Runs the original and the optimized prompt on the same model for comparison. */

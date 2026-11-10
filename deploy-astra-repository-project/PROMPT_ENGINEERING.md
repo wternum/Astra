@@ -34,7 +34,8 @@ Arena Code 对战中两个匿名模型拿同一条提示词各自构建 Web 应�
 | 清洗 | `normalizeArenaSpec` | 字段别名、截断数组抢救、去占位与异语条目，按类型默认值补齐；无法解析时回退离线规格 |
 | 渲染 | `renderArenaPrompt` | 七段结构；技术要求由 `sandboxRules` 按 `TARGET_DEFAULTS.arena.stack` 生成，用户点名的框架优先 |
 | 校验 | `src/ai/arena-quality.ts` | 结构、忠于原话、明确要求、点名技术、功能可验证、状态、视觉色值、沙箱约束、完成标准、无元话术、语言为关键项，全部可由代码补齐 |
-| 追问 | `buildArenaFollowUps` | 固定的自查打磨轮 + 模型建议的加分轮 |
+| 范围 | `firstTurnFeatures` | `features` 是核心闭环（3–5 条），`backlog` 是后续功能；核心首轮只列前者，完整首轮合并（最多 8 条） |
+| 轮次 | `src/ai/arena-rounds.ts` | 修复 / 打磨 / 健壮性 / 加功能四种轮次；观察去掉单侧说法后写成条件式检查项，附「保持可用」回归清单；`evaluateRound` 检查检查项、回归清单、不重写、对两边都成立和语言 |
 
 生成的提示词用于粘贴到 arena.ai 的 Code 模式；本工具不在本地模拟对战。
 
